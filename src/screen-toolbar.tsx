@@ -178,7 +178,7 @@ export function ScreenToolbar({
 					href={backHref}
 					className="rounded-md px-2 py-1 text-[11px] font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
 				>
-					← Taller
+					← Open-Flow
 				</a>
 			)}
 			{identity && (

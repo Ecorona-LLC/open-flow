@@ -156,9 +156,15 @@ export function WorkbenchApp({
 				{showChrome && (
 					<nav className="flex w-64 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900">
 						<header className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-700">
-							<h1 className="text-sm font-semibold">{manifest.config.title}</h1>
+							{/* The product is the title; the host project is the line under
+							    it. `config.title` names the project (the scanner defaults it
+							    to the package name), and the tagline in `config.subtitle`
+							    moved to a tooltip — two lines was the whole brief. */}
+							<h1 className="text-sm font-semibold" title={manifest.config.subtitle}>
+								Open-Flow
+							</h1>
 							<p className="mt-0.5 text-[11px] leading-snug text-zinc-500 dark:text-zinc-400">
-								{manifest.config.subtitle}
+								{manifest.config.title}
 							</p>
 						</header>
 
