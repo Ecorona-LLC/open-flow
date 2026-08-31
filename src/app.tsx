@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { FrameView } from "./frame-view";
 import { parseManifest } from "./parse-manifest";
-import type { NewTicketInput, TicketSummary } from "./pin";
+import type { NewTicketInput, SaveFlowInput, SaveFlowResult, TicketSummary } from "./pin";
 import type { RegistryEntry } from "./registry";
 import type { CreateResult } from "./ticket-drawer";
 import { WorkbenchApp, type WorkbenchView } from "./workbench-app";
@@ -37,7 +37,7 @@ import { WorkbenchApp, type WorkbenchView } from "./workbench-app";
  *
  *   // app/workbench/mount.tsx       — "use client", holds the registry
  *   import { WorkbenchClient } from "@open-flow/ui/app";
- *   import { createTicket, loadTickets } from "@open-flow/ui/actions";
+ *   import { createTicket, loadTickets, saveFlow } from "@open-flow/ui/actions";
  *   import manifest from "../../../.workbench/manifest.json";
  *   import { registry } from "../../../.workbench/registry";
  *   export function WorkbenchMount() { … }
@@ -53,6 +53,9 @@ export interface WorkbenchClientProps {
 	onCreateTicket: (input: NewTicketInput) => Promise<CreateResult>;
 	/** A Server Action. Omit it and the Superficies tab simply lists no tickets. */
 	onLoadTickets?: () => Promise<TicketSummary[]>;
+	/** A Server Action. Omit it and Flujos is read-only: no «+ Añadir
+	 *  pantalla», no connect gesture, no «Añadir recorrido». */
+	onSaveFlow?: (input: SaveFlowInput) => Promise<SaveFlowResult>;
 }
 
 export function WorkbenchClient(props: WorkbenchClientProps) {
@@ -79,7 +82,13 @@ function toView(params: URLSearchParams): WorkbenchView {
 	};
 }
 
-function Inner({ manifest: raw, registry, onCreateTicket, onLoadTickets }: WorkbenchClientProps) {
+function Inner({
+	manifest: raw,
+	registry,
+	onCreateTicket,
+	onLoadTickets,
+	onSaveFlow,
+}: WorkbenchClientProps) {
 	const params = useSearchParams();
 	const [tickets, setTickets] = useState<TicketSummary[]>([]);
 	// The manifest never changes within a session; re-walking a 393 KB object
@@ -123,6 +132,7 @@ function Inner({ manifest: raw, registry, onCreateTicket, onLoadTickets }: Workb
 			tickets={tickets}
 			view={toView(params)}
 			onCreateTicket={onCreateTicket}
+			onSaveFlow={onSaveFlow}
 		/>
 	);
 }

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useManifest } from "../config-context";
 import { cx } from "../cx";
+import { tokenCount } from "../manifest";
 import type { Token, TokenGroup } from "../manifest.types";
 
 /**
@@ -111,7 +112,7 @@ export function ElementsPanel() {
 				.filter((group) => group.tokens.length > 0)
 		: tokens;
 
-	const total = groups.reduce((count, group) => count + group.tokens.length, 0);
+	const total = tokenCount(groups);
 
 	return (
 		<div className="flex h-full flex-col">

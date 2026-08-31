@@ -31,6 +31,17 @@ await build({
 	bundle: false,
 	format: "esm",
 	target: "es2022",
+	// NOT the default `browser`: with minify on, esbuild then defines
+	// `process.env.NODE_ENV` as "production" at build time, and `server.ts`'s
+	// `isDev()` shipped as `return false` — from 0.2.0 on, the published viewer
+	// refused every ticket and journey written from the UI, in development too.
+	// The modules are ESM for both runtimes and nothing here bundles, so
+	// `neutral` changes nothing else. Asserted by `verify-dist.mjs` below.
+	platform: "neutral",
 });
 
 console.log(`minify: ${entries.length} módulos`);
+
+// Run from here rather than from package.json so the check travels with the
+// script: the public repo builds with this file but owns its own package.json.
+await import("./verify-dist.mjs");

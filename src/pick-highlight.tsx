@@ -1,5 +1,6 @@
 "use client";
 
+import { cx } from "./cx";
 import type { ResolvedNode } from "./hover-inspect";
 import { SCALE_ATTR } from "./screen-frame";
 
@@ -59,24 +60,45 @@ export function describeNode(node: ResolvedNode): string {
 	return [head, file, node.surface].filter(Boolean).join(" · ");
 }
 
-export function PickHighlight({ target }: { target: PickTarget | null }) {
-	if (!target) return null;
-	const { rect, node } = target;
-	const above = rect.top > TAG_HEIGHT + 4;
+/** Each tool's colour, so one glance says which gesture is armed: amber is
+ *  Editar's pin, sky is the storyboard's connect. */
+const TONES = {
+	amber: { border: "border-amber-400", tag: "bg-amber-400 text-amber-950" },
+	sky: { border: "border-sky-400", tag: "bg-sky-400 text-sky-950" },
+} as const;
 
+/** The hairline and its docked tag, for anything that outlines an element. */
+export function Outline({
+	rect,
+	label,
+	tone = "amber",
+}: {
+	rect: { top: number; left: number; width: number; height: number };
+	label: string;
+	tone?: keyof typeof TONES;
+}) {
+	const above = rect.top > TAG_HEIGHT + 4;
 	return (
 		<div
 			aria-hidden
 			className="pointer-events-none fixed z-[2147483000]"
 			style={{ top: rect.top, left: rect.left, width: rect.width, height: rect.height }}
 		>
-			<div className="absolute inset-0 border border-amber-400" />
+			<div className={cx("absolute inset-0 border", TONES[tone].border)} />
 			<span
-				className="absolute left-0 whitespace-nowrap rounded-sm bg-amber-400 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-950 shadow-sm"
+				className={cx(
+					"absolute left-0 whitespace-nowrap rounded-sm px-1.5 py-0.5 font-mono text-[10px] leading-none shadow-sm",
+					TONES[tone].tag,
+				)}
 				style={above ? { top: -TAG_HEIGHT } : { bottom: -TAG_HEIGHT }}
 			>
-				{describeNode(node)}
+				{label}
 			</span>
 		</div>
 	);
+}
+
+export function PickHighlight({ target }: { target: PickTarget | null }) {
+	if (!target) return null;
+	return <Outline rect={target.rect} label={describeNode(target.node)} />;
 }

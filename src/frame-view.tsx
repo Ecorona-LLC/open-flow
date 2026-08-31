@@ -11,7 +11,7 @@ import { viewportById, workbenchUrl } from "./manifest";
 import type { Manifest } from "./manifest.types";
 import { PickBox } from "./pick-box";
 import { indexRegistry, type RegistryEntry } from "./registry";
-import { ScreenFrame, useScale, FRAME_CHROME, type Zoom } from "./screen-frame";
+import { rowExtent, ScreenFrame, useScale, type Zoom } from "./screen-frame";
 import { AUTO, ScreenToolbar, type ThemeMode } from "./screen-toolbar";
 
 /**
@@ -60,7 +60,7 @@ export function FrameView({
 
 	const entry = manifest.components.find((item) => item.id === componentId);
 	const preset = viewport === AUTO ? null : viewportById(config, viewport);
-	const { ref: measureRef, scale } = useScale(zoom, preset?.width ?? 0, FRAME_CHROME);
+	const { ref: measureRef, scale } = useScale(zoom, [rowExtent([preset?.width ?? 0])]);
 	const theme: "light" | "dark" = mode === "dark" ? "dark" : "light";
 
 	useInspect(

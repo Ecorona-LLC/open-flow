@@ -8,6 +8,7 @@
 export {
 	byGroup,
 	flowById,
+	tokenCount,
 	frameUrl,
 	groupLabel,
 	surfaceForRoute,
@@ -21,6 +22,7 @@ export type {
 	ComponentEntry,
 	Flow,
 	FlowStep,
+	FlowBranch,
 	HardcodedColor,
 	LearnedFile,
 	Manifest,
@@ -46,4 +48,14 @@ export type {
 
 export { parseManifest } from "./parse-manifest";
 export type { RegistryEntry } from "./registry";
-export type { NewTicketInput, Pin, RuntimeError, TicketSummary } from "./pin";
+export type {
+	FlowBody,
+	FlowBranchInput,
+	FlowStepInput,
+	NewTicketInput,
+	Pin,
+	RuntimeError,
+	SaveFlowInput,
+	SaveFlowResult,
+	TicketSummary,
+} from "./pin";

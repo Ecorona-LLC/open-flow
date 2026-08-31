@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { byGroup, surfaceForRoute, surfaceFromPins, viewportById, workbenchUrl } from "./manifest";
-import type { ComponentEntry, Viewport, ViewerConfig } from "./manifest.types";
+import {
+	byGroup,
+	surfaceForRoute,
+	surfaceFromPins,
+	tokenCount,
+	viewportById,
+	workbenchUrl,
+} from "./manifest";
+import type { ComponentEntry, TokenGroup, Viewport, ViewerConfig } from "./manifest.types";
+
+describe("tokenCount", () => {
+	it("sums tokens across groups, since the manifest has no flat list", () => {
+		const groups = [
+			{ tokens: [{}, {}, {}] },
+			{ tokens: [] },
+			{ tokens: [{}] },
+		] as unknown as TokenGroup[];
+		expect(tokenCount(groups)).toBe(4);
+		expect(tokenCount([])).toBe(0);
+	});
+});
 
 function config(viewports: Viewport[] = []): ViewerConfig {
 	return {

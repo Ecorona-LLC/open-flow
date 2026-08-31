@@ -1,4 +1,4 @@
-import type { NewTicketInput, TicketSummary } from "./pin";
+import type { NewTicketInput, SaveFlowInput, TicketSummary } from "./pin";
 
 /**
  * The production actions: functions that exist so the types line up, and refuse.
@@ -12,7 +12,7 @@ import type { NewTicketInput, TicketSummary } from "./pin";
  * workbench route was mounted in production, which is a misconfiguration worth
  * seeing in a log.
  */
-const REFUSAL = "El taller sólo escribe tickets en desarrollo.";
+const REFUSAL = "El taller sólo escribe en desarrollo.";
 
 export async function createTicket(_input: NewTicketInput): Promise<never> {
 	throw new Error(REFUSAL);
@@ -20,4 +20,8 @@ export async function createTicket(_input: NewTicketInput): Promise<never> {
 
 export async function loadTickets(): Promise<TicketSummary[]> {
 	return [];
+}
+
+export async function saveFlow(_input: SaveFlowInput): Promise<never> {
+	throw new Error(REFUSAL);
 }

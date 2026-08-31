@@ -2,8 +2,13 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { cx } from "./cx";
-import { isElement } from "./dom-realm";
+import { isElement, readProp } from "./dom-realm";
 import { PickBox } from "./pick-box";
+// A module cycle (frame → pick-highlight → screen-frame → frame), and a safe
+// one: every binding is referenced inside a function body, never while the
+// modules evaluate. Taken over a second copy of the rect mapping, whose two
+// independent derivations are exactly the bug `mapRect`'s doc names.
+import { mapRect } from "./pick-highlight";
 
 /**
  * Frame primitives — the only place the workbench paints app surfaces.
@@ -159,6 +164,20 @@ export function RouteFrame({
 	);
 }
 
+/** What a click on an actionable element inside a mirror carries. */
+export interface MirrorPick {
+	/** Visible text of the control, collapsed, at most 80 characters. */
+	text: string;
+	/** The anchor's resolved href — absolute, thanks to the `<base>` the
+	 *  serializer injects — or null for a control that is not a link. */
+	href: string | null;
+	/** Viewport coordinates, already mapped through the scaled frame. */
+	rect: { top: number; left: number; width: number; height: number };
+}
+
+/** What counts as "a control that leads somewhere" inside a mirror. */
+export const ACTIONABLE = 'a[href], button, [role="button"], input[type="submit"]';
+
 /**
  * A captured snapshot of a route, rendered from `srcdoc` — see `mirror.ts` for
  * why the storyboard shows these instead of live frames.
@@ -166,7 +185,7 @@ export function RouteFrame({
  * `sandbox` without `allow-scripts` is the second line of defence behind the
  * serializer's stripping: whatever script survives, the browser refuses to run
  * it. `allow-same-origin` stays so the parent can still reach the document —
- * the dark toggle and ⌥E picking both depend on that.
+ * the dark toggle, ⌥E picking and the connect gesture all depend on that.
  */
 export function MirrorFrame({
 	srcdoc,
@@ -174,33 +193,89 @@ export function MirrorFrame({
 	width,
 	height,
 	theme,
+	connect,
 }: {
 	srcdoc: string;
 	title: string;
 	width: number;
 	height: number;
 	theme: "light" | "dark";
+	/**
+	 * Arms "click a control → offer + Añadir pantalla" on this mirror, where
+	 * clicks are otherwise dead. `onPick(null)` reports a click that hit no
+	 * control, so the board can close an open offer. Held in a ref: re-running
+	 * the arm effect on a prop flip would tear iframe listeners down mid-load,
+	 * the bug `useInspect` documents.
+	 */
+	connect?: {
+		onPick: (pick: MirrorPick | null) => void;
+		onHover: (pick: MirrorPick | null) => void;
+	};
 }) {
 	const ref = useRef<HTMLIFrameElement | null>(null);
+	const latest = useRef(connect);
+	useEffect(() => {
+		latest.current = connect;
+	}, [connect]);
 
 	useEffect(() => {
 		const frame = ref.current;
 		if (!frame) return;
-		const block = (event: Event) => {
+		// `isElement`, not `instanceof`: targets live in the frame's realm,
+		// where the parent's `Element` constructor never matches.
+		const controlOf = (target: EventTarget | null): Element | null => {
+			if (!isElement(target)) return null;
+			return target.closest(ACTIONABLE);
+		};
+		const pickOf = (control: Element): MirrorPick => {
+			const anchor = control.closest("a[href]");
+			const value = control.tagName === "INPUT" ? String(readProp(control, "value") ?? "") : "";
+			const text = (value || control.textContent || control.getAttribute("aria-label") || "")
+				.trim()
+				.replace(/\s+/g, " ")
+				.slice(0, 80);
+			return {
+				text,
+				// The IDL property, not the attribute: resolved against the
+				// injected `<base>`, so a relative href arrives absolute.
+				href: anchor ? String(readProp(anchor, "href")) : null,
+				rect: mapRect(control, frame),
+			};
+		};
+		const onClick = (event: Event) => {
 			// A clicked anchor would navigate the frame to the real route and
 			// silently resurrect the live load the mirror exists to avoid.
-			// `isElement`, not `instanceof`: the target lives in the frame's
-			// realm, where the parent's `Element` constructor never matches.
 			const target = event.target;
-			if (!isElement(target)) return;
-			if (target.closest("a[href]")) event.preventDefault();
+			if (isElement(target) && target.closest("a[href]")) event.preventDefault();
+			const control = controlOf(target);
+			latest.current?.onPick(control ? pickOf(control) : null);
+		};
+		// Deduped by control: `mouseover` fires per element crossed, and a
+		// fresh pick per crossing re-rendered the whole panel twice for every
+		// child boundary inside one button.
+		let hovered: Element | null = null;
+		const onOver = (event: Event) => {
+			if (!latest.current) return;
+			const control = controlOf(event.target);
+			if (control === hovered) return;
+			hovered = control;
+			latest.current.onHover(control ? pickOf(control) : null);
+		};
+		const onLeave = () => {
+			hovered = null;
+			latest.current?.onHover(null);
 		};
 		const arm = () => {
 			try {
 				const doc = frame.contentDocument;
 				if (!doc) return;
 				doc.documentElement.classList.toggle("dark", theme === "dark");
-				doc.addEventListener("click", block, true);
+				doc.addEventListener("click", onClick, true);
+				doc.addEventListener("mouseover", onOver, true);
+				// NOT capture phase: `mouseleave` does not bubble, so a plain
+				// listener fires only when the pointer leaves the document —
+				// captured, it fired for every element left along the way.
+				doc.addEventListener("mouseleave", onLeave);
 			} catch {
 				// Sandbox misconfiguration would throw; nothing to arm then.
 			}
@@ -212,7 +287,10 @@ export function MirrorFrame({
 		return () => {
 			frame.removeEventListener("load", arm);
 			try {
-				frame.contentDocument?.removeEventListener("click", block, true);
+				const doc = frame.contentDocument;
+				doc?.removeEventListener("click", onClick, true);
+				doc?.removeEventListener("mouseover", onOver, true);
+				doc?.removeEventListener("mouseleave", onLeave);
 			} catch {
 				// Already torn down.
 			}

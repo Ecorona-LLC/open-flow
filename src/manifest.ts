@@ -8,12 +8,13 @@
  * under a comment reading "Mirrors `weightFor` in scripts/workbench/ticket.mjs";
  * they are fields now.
  */
-import type { ComponentEntry, Flow, Viewport, ViewerConfig } from "./manifest.types";
+import type { ComponentEntry, Flow, TokenGroup, Viewport, ViewerConfig } from "./manifest.types";
 
 export type {
 	ComponentEntry,
 	Flow,
 	FlowStep,
+	FlowBranch,
 	HardcodedColor,
 	LearnedFile,
 	Manifest,
@@ -127,6 +128,15 @@ export function frameUrl(config: ViewerConfig, params: Record<string, string>): 
 }
 
 /** A flow by id, or the first one. */
+/**
+ * How many tokens a set of groups holds. Tokens are grouped in the manifest,
+ * so there is no flat list to `.length` — and the rail and the Elementos
+ * panel had each written this reduce for themselves.
+ */
+export function tokenCount(groups: TokenGroup[]): number {
+	return groups.reduce((count, group) => count + group.tokens.length, 0);
+}
+
 export function flowById(flows: Flow[], id: string | undefined): Flow | undefined {
 	return flows.find((flow) => flow.id === id) ?? flows[0];
 }

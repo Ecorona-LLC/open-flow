@@ -15,7 +15,7 @@ import { frameUrl, viewportById } from "../manifest";
 import type { ComponentEntry, Viewport } from "../manifest.types";
 import type { PickTarget } from "../pick-highlight";
 import type { Pin } from "../pin";
-import { FRAME_CHROME, ScreenFrame, useScale, type Zoom } from "../screen-frame";
+import { rowExtent, ScreenFrame, useScale, type Zoom } from "../screen-frame";
 import { AUTO, ScreenToolbar, type ThemeMode } from "../screen-toolbar";
 import { indexRegistry, type RegistryEntry } from "../registry";
 
@@ -121,7 +121,7 @@ export function ComponentsPanel({
 	const inline = viewport === AUTO;
 	const preset = inline ? null : viewportById(config, viewport);
 
-	const { ref: measureRef, scale } = useScale(zoom, preset?.width ?? 0, FRAME_CHROME);
+	const { ref: measureRef, scale } = useScale(zoom, [rowExtent([preset?.width ?? 0])]);
 	const themes: Array<"light" | "dark"> = theme === "split" ? ["light", "dark"] : [theme];
 
 	// Click-to-load section frames mount after inspection attached, and iframes

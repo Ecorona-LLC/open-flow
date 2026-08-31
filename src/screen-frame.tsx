@@ -58,8 +58,65 @@ export function fitScale(available: number, naturalWidth: number, gutters: numbe
 	return Math.min(1, Math.max(MIN_SCALE, usable / naturalWidth));
 }
 
+/**
+ * What a row of screens asks of its container before any scale: the frame
+ * widths, which scale, and the chrome and gutters between them, which do not.
+ */
+export interface RowExtent {
+	natural: number;
+	gutters: number;
+}
+
+/** A row's extent from the natural widths of its frames, left to right. */
+export function rowExtent(widths: readonly number[]): RowExtent {
+	return {
+		natural: widths.reduce((total, width) => total + width, 0),
+		gutters: widths.length * FRAME_CHROME + Math.max(0, widths.length - 1) * STEP_GUTTER,
+	};
+}
+
+/**
+ * The size a frame draws at. Floored, not rounded: four columns each rounding
+ * up by a fraction of a pixel is enough to push a board that should fit into
+ * a scrollbar.
+ */
+export function framedWidth(width: number, scale: number): number {
+	return Math.floor(width * scale);
+}
+
+/**
+ * One column as the board lays it out: the framed screen plus the shell's own
+ * padding. `ScreenFrame` draws exactly this and the Flujos board offsets a
+ * branch row by a sum of these — one owner, or a fork row drifts off the
+ * column it claims to continue from the day either side changes its rounding.
+ */
+export function columnWidth(width: number, scale: number): number {
+	return framedWidth(width, scale) + FRAME_CHROME;
+}
+
+/** The laid-out width of a row of columns at a scale, gutters included. */
+export function rowWidth(widths: readonly number[], scale: number): number {
+	return (
+		widths.reduce((total, width) => total + columnWidth(width, scale), 0) +
+		Math.max(0, widths.length - 1) * STEP_GUTTER
+	);
+}
+
+/**
+ * The scale that fits EVERY row. Not "fit the widest row": gutters do not
+ * scale and frames do, so the row that is widest at 100% is not always the one
+ * that needs the smallest scale — six phones beside a branch of two desktops
+ * picked the branch, and the trunk still overflowed a 900px board by 4px.
+ */
+export function fitRows(available: number, rows: readonly RowExtent[]): number {
+	return rows.reduce(
+		(best, row) => Math.min(best, fitScale(available, row.natural, row.gutters)),
+		1,
+	);
+}
+
 /** Measure a container and resolve the requested zoom into a real scale. */
-export function useScale(zoom: Zoom, naturalWidth: number, gutters: number) {
+export function useScale(zoom: Zoom, rows: readonly RowExtent[]) {
 	const ref = useRef<HTMLDivElement>(null);
 	const [available, setAvailable] = useState(0);
 
@@ -73,7 +130,7 @@ export function useScale(zoom: Zoom, naturalWidth: number, gutters: number) {
 		return () => observer.disconnect();
 	}, []);
 
-	const scale = zoom === "fit" ? fitScale(available, naturalWidth, gutters) : zoom;
+	const scale = zoom === "fit" ? fitRows(available, rows) : zoom;
 	return { ref, scale };
 }
 
@@ -98,18 +155,15 @@ export function ScreenFrame({
 	/** Arms picking on the screen itself — never on this frame's chrome. */
 	editing?: boolean;
 }) {
-	// The column is the scaled frame plus the shell's own padding. Without a
-	// bound the header text sets the min-width — a 390px phone at 33% is 128px
-	// wide, its label needs ~250px, and four of those overflowed a board that
-	// was supposed to fit.
-	//
-	// Floored, not rounded: four columns each rounding up by a fraction of a
-	// pixel is enough to push a board that should fit into a scrollbar.
-	const framed = Math.floor(viewport.width * scale);
-	const framedHeight = Math.floor(viewport.height * scale);
+	// The column is bounded to the scaled frame plus the shell's own padding.
+	// Without a bound the header text sets the min-width — a 390px phone at 33%
+	// is 128px wide, its label needs ~250px, and four of those overflowed a
+	// board that was supposed to fit.
+	const framed = framedWidth(viewport.width, scale);
+	const framedHeight = framedWidth(viewport.height, scale);
 
 	return (
-		<div style={{ width: framed + FRAME_CHROME }}>
+		<div style={{ width: columnWidth(viewport.width, scale) }}>
 			<FrameShell
 				label={label}
 				meta={`${viewport.width}×${viewport.height} · ${Math.round(scale * 100)}%`}

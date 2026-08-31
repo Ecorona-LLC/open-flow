@@ -106,6 +106,12 @@ export type Origin = "config" | "spider";
 
 export type FlowStep = { label: string, route: string, 
 /**
+ * The control on the previous screen that leads here ("Iniciar sesión"),
+ * as its author wrote it. Absent on every spider step — a navigation
+ * edge carries no link text — and on a declared step nobody labelled.
+ */
+via: string | null, 
+/**
  * A `Viewport.id`, already resolved against the config.
  */
 viewport: string, note: string | null, 
@@ -123,7 +129,21 @@ spec: string | null,
  */
 exists: boolean, };
 
-export type Flow = { id: string, title: string, description: string | null, origin: Origin, steps: Array<FlowStep>, };
+export type FlowBranch = { id: string, label: string, 
+/**
+ * Zero-based index into `Flow.steps` of the step this branch continues
+ * from. Resolved at scan time from the route the config names, and
+ * always in range: a branch whose route is not in the trunk never
+ * reaches the manifest (it is announced and dropped).
+ */
+from: number, steps: Array<FlowStep>, };
+
+export type Flow = { id: string, title: string, description: string | null, origin: Origin, steps: Array<FlowStep>, 
+/**
+ * Empty for every spider flow: a discovered journey is one path through
+ * the nav graph. Only a hand-declared flow forks.
+ */
+branches: Array<FlowBranch>, };
 
 export type LearnedFile = { file: string, ticket: string | null, };
 
@@ -208,4 +228,4 @@ export type OverlaySurface = { id: string, label: string, weight: Weight, predic
 
 export type OverlayManifest = { version: number, config: ViewerConfig, components: Array<OverlayComponent>, routes: Array<OverlayRoute>, surfaces: Array<OverlaySurface>, };
 
-export const MANIFEST_VERSION = 1;
+export const MANIFEST_VERSION = 2;

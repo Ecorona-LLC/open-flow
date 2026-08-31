@@ -1,7 +1,7 @@
 "use server";
 
-import { readTickets, writeTicket } from "./server";
-import type { NewTicketInput, TicketSummary } from "./pin";
+import { readTickets, saveFlow as writeFlow, writeTicket } from "./server";
+import type { NewTicketInput, SaveFlowInput, TicketSummary } from "./pin";
 
 /**
  * The Server Actions, and the only `"use server"` module in this package.
@@ -23,4 +23,8 @@ export async function createTicket(input: NewTicketInput) {
 
 export async function loadTickets(): Promise<TicketSummary[]> {
 	return readTickets();
+}
+
+export async function saveFlow(input: SaveFlowInput) {
+	return writeFlow(input);
 }
