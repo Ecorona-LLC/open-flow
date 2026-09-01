@@ -1,61 +1,46 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useManifest } from "../config-context";
-import { ConnectPopover, type PopoverMode } from "../connect-popover";
+import { ConnectPopover } from "../connect-popover";
 import { useInspect } from "../edit-mode";
 import {
+	actionFor,
+	connectGestures,
 	appendStep,
+	atCap,
 	bodyOf,
+	connectIntent,
 	forkFrom,
-	forkResolvesTo,
 	hasStepAt,
-	isForkPoint,
+	laneRefOf,
 	removeLast,
 	routeOfHref,
 	stepInputOf,
 	type ComposerTarget,
+	type ConnectAction,
+	type ConnectIntent,
 	type LaneRef,
 } from "../flow-edit";
 import { frameOf, NO_FRAMES, nextCapture, prune, withFrame, type Frames } from "../flow-frames";
-import {
-	forkPrefix,
-	laneKey,
-	layOut,
-	rowExtents,
-	type Lane,
-	type RowTails,
-	type StepNode,
-} from "../flow-layout";
-import { MirrorFrame, RouteFrame, type MirrorPick } from "../frame";
+import { EN_CURSO } from "../journey-acts";
+import { layOut, locateNode, type StepNode } from "../flow-layout";
+import type { MirrorPick } from "../frame";
 import type { ComponentIndex } from "../hover-inspect";
-import { frameUrl, viewportById } from "../manifest";
-import type { Flow, Viewport } from "../manifest.types";
+import { viewportById } from "../manifest";
+import type { Flow } from "../manifest.types";
 import { CAPTURE_TOTAL_MS, captureMirror, serializeMirror } from "../mirror";
 import { Outline, type PickTarget } from "../pick-highlight";
+import { readSketch, type Sketch } from "../screen-sketch";
 import type { Pin, SaveFlowInput, SaveFlowResult } from "../pin";
-import {
-	framedWidth,
-	rowWidth,
-	ScreenFrame,
-	STEP_GUTTER,
-	useScale,
-	type Zoom,
-} from "../screen-frame";
+import type { CanvasDetail } from "../canvas-gestures";
 import { AUTO, CHIP, ScreenToolbar, type ThemeMode } from "../screen-toolbar";
-import {
-	GHOST_WIDTH,
-	GhostCard,
-	NewScreenCard,
-	SpecCard,
-	Stage,
-	TailPlaceholder,
-	type CardDraft,
-	type CardStatus,
-} from "./flow-cards";
+import { type CardDraft, type CardStatus } from "./flow-cards";
+import { CanvasBoard, type BoardComposer } from "./flow-canvas-board";
 
 /**
- * Flujos — a storyboard of the REAL routes, one live frame at a time.
+ * Flujos — the REAL routes as a graph on a pan/zoom canvas, one live frame at
+ * a time.
  *
  * There is no fixture and no re-assembled screen here: a step is whatever that
  * route renders right now, for whoever is signed in to this browser. Change the
@@ -71,15 +56,16 @@ import {
  * activating another demotes it to a fresh mirror. A page that refuses to be
  * captured stays live — the bounded worst case is what every frame used to be.
  *
- * A journey can fork. The trunk is one row; each branch is a row of its own
- * starting after the trunk step it continues from. A step whose page is not
- * built yet is a **spec card** — what the screen must do — never a frame
- * pointed at a 404, and never a capture.
+ * A journey can fork. `flow-graph` turns the walk into nodes and edges,
+ * `CanvasBoard` places them, and branches fan out below their fork step with
+ * the «vía» captions riding the edges. A step whose page is not built yet is a
+ * **spec card** — what the screen must do — never a frame pointed at a 404,
+ * and never a capture.
  *
  * And a journey is COMPOSED here, not in a form: click a control inside a
  * mirror (where clicks are otherwise dead) and the popover offers "+ Añadir
  * pantalla"; every row ends in a ghost card; every trunk step can start a
- * branch. The card that opens is a column on the board — the screen appears
+ * branch. The card that opens is a node on the canvas — the screen appears
  * where it will live. Each confirmation sends the whole journey through the
  * host's `saveFlow` action to `workbench flow set`, the same writer the
  * terminal uses, and the rescan hot-reloads the manifest: the card retires
@@ -88,483 +74,11 @@ import {
  *
  * Shares its toolbar with Componentes. **Auto** honours each step's own
  * viewport; picking a preset overrides every step, so you can walk the whole
- * flow at one breakpoint.
+ * flow at one breakpoint. The toolbar's zoom presets do not apply — the
+ * canvas has its own zoom, bottom-left.
  */
 
-function hora(timestamp: number): string {
-	return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
 const EMPTY_DRAFT: CardDraft = { route: "", label: "", spec: "", via: "", branchLabel: "" };
-
-/** The lane a board row addresses on the wire. */
-function laneRefOf(lane: Lane): LaneRef {
-	return lane.kind === "trunk"
-		? { kind: "trunk" }
-		: { kind: "branch", index: lane.index, id: lane.id };
-}
-
-/** The row half of a ref's key, matching `StepNode.key`'s prefix. */
-function refKey(ref: LaneRef): string {
-	return laneKey(ref.kind === "trunk" ? null : ref.id);
-}
-
-/** Everything the board needs to draw and drive the composer. Bundled so the
- *  presence of ONE prop says "this board can grow the journey". */
-interface BoardComposer {
-	/** The open card, already gated for the retire-on-arrival paint. */
-	card: { at: ComposerTarget; draft: CardDraft; status: CardStatus } | null;
-	cardViewport: Viewport | null;
-	routesList: string;
-	/** A write is in flight somewhere; every gesture waits its turn. */
-	busy: boolean;
-	onDraft: (changes: Partial<CardDraft>) => void;
-	onSubmit: () => void;
-	onCancelCard: () => void;
-	onGhost: (lane: LaneRef, after: number, flat: number, anchorRoute: string) => void;
-	onFork: (position: number, flat: number, anchorRoute: string) => void;
-	onRemove: (lane: LaneRef) => void;
-	/** Whether mirrors offer the connect gesture (off while Editar pins). */
-	connect: boolean;
-	onPick: (node: StepNode, pick: MirrorPick | null) => void;
-	onHoverPick: (node: StepNode, pick: MirrorPick | null) => void;
-}
-
-function ThemedBoard({
-	flow,
-	lanes,
-	scale,
-	theme,
-	nonce,
-	editing,
-	slot,
-	frames,
-	active,
-	onCapture,
-	onActivate,
-	onRefresh,
-	onDemote,
-	registerLiveFrame,
-	composer,
-}: {
-	flow: Flow;
-	lanes: Lane[];
-	scale: number;
-	theme: "light" | "dark";
-	nonce: number;
-	editing: boolean;
-	/** 0 is the sweep's board: captures happen here, never in the split twin. */
-	slot: number;
-	frames: Frames;
-	active: { key: string; slot: number } | null;
-	onCapture: (key: string, ticket: number, frame: HTMLIFrameElement) => void;
-	onActivate: (key: string, slot: number) => void;
-	onRefresh: (key: string) => void;
-	onDemote: () => void;
-	registerLiveFrame: (key: string, slot: number, frame: HTMLIFrameElement | null) => void;
-	composer: BoardComposer | null;
-}) {
-	const { config } = useManifest();
-
-	return (
-		<div className="space-y-6">
-			{lanes.map((lane) => {
-				// Where a branch row starts: right after the column of the trunk
-				// step it continues from, so the fork is drawn where it happens
-				// rather than explained in a caption. The caption moves with the
-				// row — pinned to the left edge, at 100% on a desktop trunk it sat
-				// a whole screen away from the frames it named.
-				const offset =
-					lane.kind === "branch" && lane.fork !== null
-						? rowWidth(forkPrefix(lanes, lane.fork), scale) + STEP_GUTTER
-						: 0;
-				const laneRef = laneRefOf(lane);
-				const openCard =
-					composer?.card &&
-					!composer.card.at.fork &&
-					refKey(composer.card.at.lane) === refKey(laneRef)
-						? composer.card
-						: null;
-				const last = lane.nodes[lane.nodes.length - 1];
-				return (
-					// `w-max`: a block row would be the container's width minus the
-					// offset, which at 100% zoom is 48px or negative — the caption
-					// wrapped one word per line, then vanished. Sized to its row, the
-					// caption has the row's width and the board scrolls as before.
-					<div
-						key={lane.kind === "trunk" ? "trunk" : `branch:${lane.id}`}
-						className="w-max"
-						style={offset > 0 ? { marginLeft: offset } : undefined}
-					>
-						{lane.kind === "branch" && (
-							<p className="mb-2 whitespace-nowrap text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
-								<span aria-hidden>↳ </span>
-								{lane.label} · desde el paso {lane.from + 1}
-								{lane.nodes[0]?.step.via && ` · vía «${lane.nodes[0].step.via}»`}
-								{lane.fork === null && " — ese paso no está en el tronco"}
-							</p>
-						)}
-						<ol
-							className="flex items-start gap-4"
-							aria-label={
-								lane.kind === "trunk" ? "Tronco" : `${lane.label}, desde el paso ${lane.from + 1}`
-							}
-						>
-							{lane.nodes.map((node, position) => {
-								const { step, viewport } = node;
-								const state = frameOf(frames, node);
-								const isActive = active !== null && active.key === node.key && active.slot === slot;
-								const capturingTicket = state.kind === "capturing" ? state.ticket : null;
-								const capturingHere = capturingTicket !== null && slot === 0;
-								// A restless step stays live in the sweep's board only — a
-								// second live copy in the split twin would double exactly the
-								// load the mirrors exist to avoid.
-								const live = isActive || (state.kind === "restless" && slot === 0) || capturingHere;
-								const isLast = position === lane.nodes.length - 1;
-								// The via of the step this arrow LEADS TO.
-								const nextVia = lane.nodes[position + 1]?.step.via;
-								return (
-									// Keys are scoped to the row, so the position alone is
-									// unique; the route forces a remount exactly when the step
-									// at that column changes.
-									<Fragment key={`${position}:${step.route}`}>
-										<li className="shrink-0">
-											<ScreenFrame
-												viewport={viewport}
-												scale={scale}
-												label={`${node.number}. ${step.label}`}
-												editing={editing && state.kind !== "unbuilt"}
-											>
-												{state.kind === "unbuilt" ? (
-													<SpecCard step={step} viewport={viewport} theme={theme} />
-												) : live ? (
-													<RouteFrame
-														key={nonce}
-														src={step.route}
-														title={`${flow.title} · ${step.label}`}
-														width={viewport.width}
-														height={viewport.height}
-														theme={theme}
-														frameRef={(element) => registerLiveFrame(node.key, slot, element)}
-														onLoad={
-															capturingHere && capturingTicket !== null
-																? (frame) => onCapture(node.key, capturingTicket, frame)
-																: undefined
-														}
-													/>
-												) : state.kind === "mirrored" ? (
-													<MirrorFrame
-														srcdoc={state.srcdoc}
-														title={`${flow.title} · ${step.label} (espejo)`}
-														width={viewport.width}
-														height={viewport.height}
-														theme={theme}
-														connect={
-															composer?.connect && !editing
-																? {
-																		onPick: (pick) => composer.onPick(node, pick),
-																		onHover: (pick) => composer.onHoverPick(node, pick),
-																	}
-																: undefined
-														}
-													/>
-												) : (
-													<Stage
-														viewport={viewport}
-														theme={theme}
-														className="flex items-center justify-center"
-													>
-														<p className="max-w-lg px-10 text-center text-2xl leading-relaxed text-zinc-400 dark:text-zinc-500">
-															{state.kind === "capturing"
-																? "Cargando la ruta real…"
-																: state.kind === "restless"
-																	? "Sin espejo — el paso sigue en vivo en el tablero claro."
-																	: "En cola — cada paso se carga una sola vez y queda como espejo."}
-														</p>
-													</Stage>
-												)}
-											</ScreenFrame>
-											{(isActive ||
-												state.kind === "mirrored" ||
-												state.kind === "restless" ||
-												state.kind === "unbuilt" ||
-												capturingHere) && (
-												<div
-													className="mt-2 flex flex-wrap items-center gap-2"
-													style={{ width: framedWidth(viewport.width, scale) }}
-												>
-													{state.kind === "unbuilt" ? (
-														<span
-															className="text-[11px] text-amber-700 dark:text-amber-300"
-															title="La ruta no existe todavía; el cuadro muestra la especificación. Se vuelve un espejo real en el siguiente `workbench scan` después de que la página aterrice."
-														>
-															Sin página todavía
-														</span>
-													) : isActive ? (
-														<>
-															<span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
-																En vivo
-															</span>
-															<button type="button" className={CHIP} onClick={onDemote}>
-																Volver a espejo
-															</button>
-														</>
-													) : state.kind === "mirrored" ? (
-														<>
-															<span
-																className="text-[11px] text-zinc-500 dark:text-zinc-400"
-																title="Espejo estático de la página real — sin peticiones al servidor."
-															>
-																Espejo · {hora(state.capturedAt)}
-															</span>
-															<button
-																type="button"
-																className={CHIP}
-																onClick={() => onActivate(node.key, slot)}
-																title="Monta la página real para interactuar con ella."
-															>
-																Activar
-															</button>
-															<button
-																type="button"
-																className={CHIP}
-																onClick={() => onRefresh(node.key)}
-																title="Vuelve a cargar la ruta y captura un espejo nuevo."
-															>
-																Actualizar
-															</button>
-														</>
-													) : state.kind === "restless" ? (
-														<>
-															<span
-																className="text-[11px] text-amber-700 dark:text-amber-300"
-																title="La página no terminó de asentarse, así que el cuadro sigue en vivo."
-															>
-																En vivo — sin espejo
-															</span>
-															<button
-																type="button"
-																className={CHIP}
-																onClick={() => onRefresh(node.key)}
-															>
-																Reintentar espejo
-															</button>
-														</>
-													) : (
-														<span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-															Cargando…
-														</span>
-													)}
-													{composer && lane.kind === "trunk" && (
-														<button
-															type="button"
-															className={CHIP}
-															disabled={composer.busy || composer.card !== null}
-															onClick={() => composer.onFork(position, node.flat, node.step.route)}
-															title="Empieza una rama desde este paso."
-														>
-															+ rama
-														</button>
-													)}
-													{composer &&
-														isLast &&
-														(lane.kind === "branch" || lane.nodes.length > 1) &&
-														(lane.kind === "trunk" && isForkPoint(flow, position) ? (
-															<button
-																type="button"
-																// Focusable and announced, unlike `disabled`:
-																// the SENTENCE is the point, and a tooltip on
-																// an unfocusable control reaches nobody.
-																className={`${CHIP} opacity-40`}
-																aria-disabled="true"
-																onClick={() => {}}
-																title="Este paso tiene ramas; quítalas primero."
-															>
-																quitar
-															</button>
-														) : (
-															<button
-																type="button"
-																className={CHIP}
-																disabled={composer.busy || composer.card !== null}
-																onClick={() => composer.onRemove(laneRef)}
-																title="Quita esta pantalla del recorrido."
-															>
-																quitar
-															</button>
-														))}
-												</div>
-											)}
-											<div
-												className="mt-2 flex items-start justify-between gap-2"
-												style={{ width: framedWidth(viewport.width, scale) }}
-											>
-												{step.note && (
-													<p className="text-[11px] leading-snug text-zinc-500 dark:text-zinc-400">
-														{step.note}
-													</p>
-												)}
-												<span className="ml-auto flex shrink-0 items-center gap-2">
-													{state.kind !== "unbuilt" ? (
-														<>
-															<a
-																href={step.route}
-																target="_blank"
-																rel="noreferrer"
-																className="font-mono text-[11px] text-zinc-500 underline underline-offset-2 hover:text-zinc-900 dark:hover:text-zinc-100"
-															>
-																{step.route} ↗
-															</a>
-															<a
-																href={frameUrl(config, {
-																	route: step.route,
-																	viewport: viewport.id,
-																	theme,
-																})}
-																target="_blank"
-																rel="noreferrer"
-																className="text-[11px] text-zinc-500 underline underline-offset-2 hover:text-zinc-900 dark:hover:text-zinc-100"
-															>
-																aislado ↗
-															</a>
-														</>
-													) : (
-														// No link to a page that is not there.
-														<span className="font-mono text-[11px] text-zinc-400 dark:text-zinc-500">
-															{step.route}
-														</span>
-													)}
-												</span>
-											</div>
-										</li>
-										{position < lane.nodes.length - 1 && (
-											// Hidden only when it carries nothing: the vía caption is
-											// the one authored fact this row adds, and burying it in
-											// an aria-hidden arrow silenced it for assistive tech.
-											<li
-												aria-hidden={nextVia ? undefined : true}
-												className="relative shrink-0 self-center text-xl text-zinc-400 dark:text-zinc-600"
-											>
-												<span aria-hidden>→</span>
-												{nextVia && (
-													// Absolutely positioned: STEP_GUTTER is what `fit`
-													// counts for this column, and a caption with layout
-													// width would make it lie.
-													<span className="absolute left-1/2 top-full mt-0.5 -translate-x-1/2 whitespace-nowrap text-[10px] text-zinc-500 dark:text-zinc-400">
-														«{nextVia}»
-													</span>
-												)}
-											</li>
-										)}
-									</Fragment>
-								);
-							})}
-							{composer && (
-								<>
-									<li
-										aria-hidden
-										className="shrink-0 self-center text-xl text-zinc-300 dark:text-zinc-700"
-									>
-										→
-									</li>
-									<li className="shrink-0">
-										{openCard && composer.cardViewport ? (
-											<ScreenFrame
-												viewport={composer.cardViewport}
-												scale={scale}
-												label="Nueva pantalla"
-											>
-												{slot === 0 ? (
-													<NewScreenCard
-														viewport={composer.cardViewport}
-														theme={theme}
-														fork={false}
-														routesList={composer.routesList}
-														draft={openCard.draft}
-														status={openCard.status}
-														onDraft={composer.onDraft}
-														onSubmit={composer.onSubmit}
-														onCancel={composer.onCancelCard}
-													/>
-												) : (
-													<TailPlaceholder
-														viewport={composer.cardViewport}
-														theme={theme}
-														writing={openCard.status === "writing"}
-													/>
-												)}
-											</ScreenFrame>
-										) : (
-											<GhostCard
-												width={GHOST_WIDTH}
-												height={last?.viewport.height ?? 844}
-												scale={scale}
-												label="+ Añadir pantalla"
-												disabled={composer.busy || composer.card !== null}
-												onOpen={() =>
-													composer.onGhost(
-														laneRef,
-														lane.nodes.length - 1,
-														last?.flat ?? 0,
-														last?.step.route ?? "",
-													)
-												}
-											/>
-										)}
-									</li>
-								</>
-							)}
-						</ol>
-					</div>
-				);
-			})}
-			{composer?.card?.at.fork && composer.cardViewport && (
-				// The branch being authored, drawn where it will live: its row
-				// starts after the fork column, exactly like a real branch row.
-				<div
-					className="w-max"
-					style={{
-						marginLeft: rowWidth(forkPrefix(lanes, composer.card.at.flat), scale) + STEP_GUTTER,
-					}}
-				>
-					<p className="mb-2 whitespace-nowrap text-[11px] font-medium text-sky-600 dark:text-sky-400">
-						<span aria-hidden>↳ </span>
-						{composer.card.draft.branchLabel.trim() || "nueva rama"} · desde el paso{" "}
-						{composer.card.at.after + 1}
-						{forkResolvesTo(flow, flow.steps[composer.card.at.after]?.route ?? "") !==
-							composer.card.at.after &&
-							" — el tronco repite esta ruta; el motor dibuja la rama desde su primera aparición"}
-					</p>
-					<ol className="flex items-start gap-4" aria-label="Nueva rama">
-						<li className="shrink-0">
-							<ScreenFrame viewport={composer.cardViewport} scale={scale} label="Nueva pantalla">
-								{slot === 0 ? (
-									<NewScreenCard
-										viewport={composer.cardViewport}
-										theme={theme}
-										fork
-										routesList={composer.routesList}
-										draft={composer.card.draft}
-										status={composer.card.status}
-										onDraft={composer.onDraft}
-										onSubmit={composer.onSubmit}
-										onCancel={composer.onCancelCard}
-									/>
-								) : (
-									<TailPlaceholder
-										viewport={composer.cardViewport}
-										theme={theme}
-										writing={composer.card.status === "writing"}
-									/>
-								)}
-							</ScreenFrame>
-						</li>
-					</ol>
-				</div>
-			)}
-		</div>
-	);
-}
 
 const ROUTES_LIST = "workbench-flow-routes";
 
@@ -579,7 +93,6 @@ export function FlowsPanel({
 	onOpenRequest,
 	showChrome,
 	initialViewport,
-	initialZoom,
 	initialTheme,
 	routes,
 	onSaveFlow,
@@ -594,7 +107,6 @@ export function FlowsPanel({
 	onOpenRequest: () => void;
 	showChrome: boolean;
 	initialViewport?: string;
-	initialZoom?: Zoom;
 	initialTheme?: ThemeMode;
 	/** The app's page routes, offered as suggestions in the card. */
 	routes?: string[];
@@ -605,9 +117,13 @@ export function FlowsPanel({
 	const { config, stats } = useManifest();
 	const [nonce, setNonce] = useState(0);
 	const [viewport, setViewport] = useState<string>(initialViewport ?? AUTO);
-	const [zoom, setZoom] = useState<Zoom>(initialZoom ?? "fit");
 	const [theme, setTheme] = useState<ThemeMode>(initialTheme ?? "light");
+	// The canvas' distance band. Panel state because `useInspect` keys off it:
+	// crossing the threshold remounts every mirror, and listeners attached to
+	// the old iframes are attached to nothing.
+	const [detail, setDetail] = useState<CanvasDetail>("near");
 	const pickRef = useRef<HTMLDivElement>(null);
+	const noticesRef = useRef<HTMLDetailsElement>(null);
 
 	const override = viewport === AUTO ? null : viewportById(config, viewport);
 	// The config's default viewport: `bodyOf` elides it so a step that never
@@ -698,7 +214,7 @@ export function FlowsPanel({
 			const route = nodes.find((node) => node.key === key)?.step.route;
 			if (!route) return;
 			void captureMirror(frame, route)
-				.then((srcdoc) => {
+				.then((capture) => {
 					setFrames((current) => {
 						// Only THIS capture takes the result: a stale resolution
 						// after Recargar or a StrictMode remount must not overwrite
@@ -708,7 +224,14 @@ export function FlowsPanel({
 						return withFrame(
 							current,
 							key,
-							srcdoc ? { kind: "mirrored", srcdoc, capturedAt: Date.now() } : { kind: "restless" },
+							capture
+								? {
+										kind: "mirrored",
+										srcdoc: capture.srcdoc,
+										sketch: capture.sketch,
+										capturedAt: Date.now(),
+									}
+								: { kind: "restless" },
 						);
 					});
 				})
@@ -736,9 +259,24 @@ export function FlowsPanel({
 					// relative asset in the demoted mirror 404.
 					const liveRoute = element.contentWindow?.location.pathname ?? route;
 					const srcdoc = serializeMirror(doc, liveRoute, window.location.origin);
+					// Its own guard, like `captureMirror`'s: a sketch is an
+					// enhancement, the mirror is the contract. Sharing one try meant
+					// a rect that threw discarded an already-serialized mirror and
+					// silently lost everything the user just did in the live frame.
+					let sketch: Sketch | null = null;
+					try {
+						sketch = readSketch(doc, {
+							width: element.contentWindow?.innerWidth ?? element.clientWidth,
+							height: element.contentWindow?.innerHeight ?? element.clientHeight,
+						});
+					} catch {
+						// The card falls back to «Sin vista previa»; the mirror stands.
+					}
 					const capturedAt = Date.now();
 					const key = active.key;
-					setFrames((current) => withFrame(current, key, { kind: "mirrored", srcdoc, capturedAt }));
+					setFrames((current) =>
+						withFrame(current, key, { kind: "mirrored", srcdoc, sketch, capturedAt }),
+					);
 				}
 			} catch {
 				// The step keeps its previous mirror rather than going blank.
@@ -781,11 +319,14 @@ export function FlowsPanel({
 		node: StepNode;
 		pick: MirrorPick;
 		route: string | null;
-		mode: PopoverMode;
+		intent: ConnectIntent;
 	} | null>(null);
 	const [connectHover, setConnectHover] = useState<{
 		pick: MirrorPick;
 		route: string | null;
+		intent: ConnectIntent;
+		/** A click would be dropped right now. A fact the tag must carry. */
+		parked: boolean;
 	} | null>(null);
 
 	// The card retires the moment the hot-reloaded flow holds its step — the
@@ -825,18 +366,39 @@ export function FlowsPanel({
 		setRemoving((current) => (current && current.error === null ? null : current));
 	}, [shape, nonce]);
 
+	// Panning fires no scroll event, so the popover's scroll-close never hears
+	// it. The picks' rects are frozen at click time — under a moved viewport
+	// they point at nothing, so CLOSING (not recomputing) is the design.
+	// Functional no-op-when-null updates: a 60 Hz pan with nothing open must
+	// schedule no re-renders.
+	const onCanvasViewport = useCallback(() => {
+		setConnect((current) => (current === null ? current : null));
+		setConnectHover((current) => (current === null ? current : null));
+		// The notices float over the canvas; a pan under them leaves them
+		// pointing at nothing, the same reason the pick overlays close.
+		if (noticesRef.current?.open) noticesRef.current.open = false;
+	}, []);
+
+	/** What a control on this screen can do — one answer, four callers. */
+	const intentFor = (node: StepNode, pick: MirrorPick) => {
+		const loc = locate(node.key);
+		if (!loc) return null;
+		const route = routeOfHref(pick.href, window.location.origin);
+		return {
+			loc,
+			route,
+			intent: connectIntent(
+				flow,
+				{ lane: loc.kind, position: loc.position, isLast: loc.isLast },
+				route,
+				atCap(flow, config.maxFlowSteps),
+			),
+		};
+	};
+
 	const locate = (key: string) => {
-		for (const lane of lanes) {
-			const position = lane.nodes.findIndex((node) => node.key === key);
-			if (position === -1) continue;
-			return {
-				ref: laneRefOf(lane),
-				kind: lane.kind,
-				position,
-				isLast: position === lane.nodes.length - 1,
-			};
-		}
-		return null;
+		const found = locateNode(lanes, key);
+		return found && { ref: laneRefOf(found.lane), kind: found.lane.kind, ...found };
 	};
 
 	const submit = async () => {
@@ -961,40 +523,71 @@ export function FlowsPanel({
 						setConnect(null);
 						return;
 					}
-					const loc = locate(node.key);
-					if (!loc) return;
-					const route = routeOfHref(pick.href, window.location.origin);
-					const mode: PopoverMode = loc.isLast
-						? "append"
-						: loc.kind === "trunk"
-							? "fork"
-							: "blocked";
-					setConnect({ node, pick, route, mode });
+					// The same guard every chip carries. Without it a click while a
+					// card is open silently replaced that card's draft — the route
+					// and the spec somebody had already typed.
+					if (busy || card !== null) return;
+					const resolved = intentFor(node, pick);
+					if (!resolved) return;
+					// A right-click asked for a branch by name. When that is legal
+					// here, skip the popover entirely — the whole point of the
+					// gesture is that «Iniciar sesión» and «Crear cuenta» become
+					// two branches without a menu in between. When it is not, the
+					// popover opens and says why.
+					const wanted = actionFor(resolved.intent, pick.wants);
+					if (pick.wants === "fork" && wanted?.kind === "fork") {
+						setConnectHover(null);
+						openCard(node, resolved.loc, pick, resolved.route, wanted);
+						return;
+					}
+					setConnect({ node, pick, route: resolved.route, intent: resolved.intent });
 					setConnectHover(null);
 				},
-				onHoverPick: (_node, pick) => {
+				onHoverPick: (node, pick) => {
+					// Hover reads the SAME rule the click will apply, so the label
+					// can promise exactly what happens — including that right now
+					// it happens to do nothing. `onPick` drops a pick while a card
+					// is open or a write is in flight, and a tag reading «clic
+					// seguir» over a click that is silently swallowed is the very
+					// failure the right button was already taught to avoid.
+					const resolved = pick ? intentFor(node, pick) : null;
 					setConnectHover(
-						pick ? { pick, route: routeOfHref(pick.href, window.location.origin) } : null,
+						pick && resolved
+							? {
+									pick,
+									route: resolved.route,
+									intent: resolved.intent,
+									parked: busy || card !== null,
+								}
+							: null,
 					);
 				},
 			}
 		: null;
 
-	const confirmConnect = () => {
-		if (!connect) return;
-		const { node, pick, route, mode } = connect;
-		const loc = locate(node.key);
-		setConnect(null);
-		if (!loc || mode === "blocked") return;
+	/** Open the composer for a picked control. One writer, three callers: the
+	 *  popover's primary, its «¿rama?» switch, and the right-click shortcut. */
+	const openCard = (
+		node: StepNode,
+		loc: NonNullable<ReturnType<typeof locate>>,
+		pick: MirrorPick,
+		route: string | null,
+		action: ConnectAction,
+	) => {
 		const draft: CardDraft = {
 			route: route ?? "",
 			label: pick.text,
 			spec: "",
 			via: pick.text,
-			branchLabel: pick.text,
+			// The engine slugs a branch label into its id and refuses twins, so
+			// «Ver más» in the header and «Ver más» in the footer would collide —
+			// after the spec had been typed. Seeded blank instead of with a name
+			// that is already taken, so the card asks rather than the engine
+			// refuses.
+			branchLabel: flow.branches.some((branch) => branch.label === pick.text) ? "" : pick.text,
 		};
 		const at: ComposerTarget =
-			mode === "fork"
+			action.kind === "fork"
 				? {
 						lane: { kind: "trunk" },
 						after: loc.position,
@@ -1012,31 +605,15 @@ export function FlowsPanel({
 		setComposer({ at, draft, status: "editing" });
 	};
 
-	/* ------------------------------------------------------------ layout */
+	const confirmConnect = (action: ConnectAction) => {
+		if (!connect) return;
+		const { node, pick, route } = connect;
+		const loc = locate(node.key);
+		setConnect(null);
+		if (loc) openCard(node, loc, pick, route, action);
+	};
 
-	// `fit` fits EVERY row (`fitRows` says why "the widest" is not enough),
-	// composer tails included: the ghost and the open card are real columns,
-	// and a `fit` that ignored them put a scrollbar on a board whose promise
-	// is that it fits.
-	const tails = useMemo((): RowTails | undefined => {
-		if (!canCompose) return undefined;
-		const tail = new Map<string, number>();
-		for (const lane of lanes) {
-			const key = lane.kind === "trunk" ? laneKey(null) : laneKey(lane.id);
-			const width =
-				card && !card.at.fork && refKey(card.at.lane) === key
-					? (cardViewport?.width ?? GHOST_WIDTH)
-					: GHOST_WIDTH;
-			tail.set(key, width);
-		}
-		return {
-			tail,
-			forkRow:
-				card?.at.fork && cardViewport ? { fork: card.at.flat, width: cardViewport.width } : null,
-		};
-	}, [canCompose, lanes, card, cardViewport]);
-	const rows = useMemo(() => rowExtents(lanes, tails), [lanes, tails]);
-	const { ref: measureRef, scale } = useScale(zoom, rows);
+	/* ------------------------------------------------------------ render */
 
 	const themes: Array<"light" | "dark"> = theme === "split" ? ["light", "dark"] : [theme];
 
@@ -1046,13 +623,32 @@ export function FlowsPanel({
 		componentIndex,
 		{ onPin, onHover },
 		// Frames appear as the sweep advances and on activation, and iframes are
-		// instrumented only at attach time — the transitions have to be in here.
-		`${flow.id}:${nonce}:${viewport}:${zoom}:${theme}:${nodes
+		// instrumented only at attach time — every transition has to be in here.
+		// A pan or a zoom is NOT one: the canvas moves frames, it never remounts
+		// them. Crossing the DETAIL threshold is, though — far replaces every
+		// mirror with a card and near builds fresh iframes, so without `detail`
+		// «Señalar» went silently dead after one zoom out and back.
+		`${flow.id}:${nonce}:${viewport}:${theme}:${detail}:${nodes
 			.map((node) => frameOf(frames, node).kind.charAt(0))
 			.join("")}:${active ? `${active.slot}.${active.key}` : "-"}`,
 	);
 
 	const unbuilt = nodes.filter((node) => !node.step.exists).length;
+	// Everything the panel must say but need not shout: the header shows the
+	// first and counts the rest, and the whole set opens on click.
+	const notices = [
+		unbuilt > 0 &&
+			`${unbuilt} ${unbuilt === 1 ? "paso por construir" : "pasos por construir"} — se muestran sus especificaciones; se vuelven espejos reales cuando sus páginas aterricen.`,
+		stats.untraceableHrefs > 0 &&
+			`${stats.untraceableHrefs} enlaces con destino calculado no se pudieron rastrear, así que puede faltar algún paso.`,
+		stats.droppedFlows > 0 &&
+			`${stats.droppedFlows} recorridos adicionales encontrados y no mostrados; declara los que importen en workbench.config.json.`,
+		// The trim is said per step too, but that footer is `NearOnly` — and a
+		// truncated journey matters most at the far zoom, where you are reading
+		// the shape and cannot see the sentence.
+		flow.steps.some((step) => step.notice) &&
+			"Este recorrido se muestra recortado; abre un paso para ver por qué.",
+	].filter((notice): notice is string => typeof notice === "string");
 
 	return (
 		<div className="flex h-full flex-col">
@@ -1060,8 +656,7 @@ export function FlowsPanel({
 				<ScreenToolbar
 					viewport={viewport}
 					onViewport={setViewport}
-					zoom={zoom}
-					onZoom={setZoom}
+					zoomDisabledReason="El lienzo tiene su propio zoom, abajo a la izquierda."
 					theme={theme}
 					onTheme={setTheme}
 					actions={
@@ -1071,8 +666,8 @@ export function FlowsPanel({
 					}
 					hint={
 						viewport === AUTO
-							? "Rutas reales, cargadas de una en una y congeladas como espejos; activa un paso para interactuar. Las pantallas con sesión requieren haber iniciado sesión aquí."
-							: `Rutas reales, los ${nodes.length - unbuilt} pasos a ${override?.width}px, congeladas como espejos${unbuilt > 0 ? `; ${unbuilt} por construir` : ""}.`
+							? "Rutas reales, cargadas de una en una y congeladas como espejos; activa un paso para interactuar. Arrastra el fondo para moverte; Ctrl/⌘ + rueda para acercar; con el lienzo enfocado, flechas para moverte, + y − para el zoom, 0 para ajustar."
+							: `Rutas reales, los ${nodes.length - unbuilt} pasos a ${override?.width}px, congeladas como espejos${unbuilt > 0 ? `; ${unbuilt} por construir` : ""}. Arrastra el fondo para moverte; Ctrl/⌘ + rueda para acercar; con el lienzo enfocado, flechas para moverte, + y − para el zoom, 0 para ajustar.`
 					}
 					editing={editing}
 					onToggleEdit={onToggleEdit}
@@ -1082,68 +677,73 @@ export function FlowsPanel({
 				/>
 			)}
 
-			<div
-				ref={measureRef}
-				className="min-h-0 flex-1 overflow-auto bg-zinc-50 p-6 dark:bg-zinc-950"
-			>
-				<header className="mb-5 max-w-2xl">
-					<div className="flex items-center gap-2">
-						<h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">{flow.title}</h2>
-						{flow.origin === "spider" && (
-							<span
-								className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
-								title="Descubierto siguiendo los enlaces reales de la app. Añádele una pantalla y queda declarado en workbench.config.json con este mismo id."
-							>
-								descubierto
+			<div className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-6 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+				<h2 className="shrink-0 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+					{flow.title}
+				</h2>
+				{flow.origin === "spider" && (
+					<span
+						className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+						title="Descubierto siguiendo los enlaces reales de la app. Añádele una pantalla y queda declarado en workbench.config.json con este mismo id."
+					>
+						descubierto
+					</span>
+				)}
+				{flow.branches.length > 0 && (
+					<span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+						{flow.branches.length} {flow.branches.length === 1 ? "rama" : "ramas"}
+					</span>
+				)}
+				{/* One line, not six. The canvas is the panel's whole point and the
+				    header used to spend a fifth of its height on prose that is the
+				    same on every visit; what is left is a summary you can open. */}
+				<details ref={noticesRef} className="group relative min-w-0 flex-1">
+					<summary className="cursor-pointer list-none truncate text-[11px] text-zinc-500 marker:content-none [&::-webkit-details-marker]:hidden dark:text-zinc-400">
+						<span className="underline decoration-dotted underline-offset-2">
+							{notices.length > 0 ? notices[0] : (flow.description ?? "Sobre este recorrido")}
+						</span>
+						{notices.length > 1 && (
+							<span className="ml-1 rounded bg-amber-100 px-1 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+								+{notices.length - 1}
+								<span className="sr-only"> avisos más</span>
 							</span>
 						)}
-						{flow.branches.length > 0 && (
-							<span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-								{flow.branches.length} {flow.branches.length === 1 ? "rama" : "ramas"}
-							</span>
+					</summary>
+					<div className="absolute z-20 mt-1 max-w-2xl rounded-md border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+						{flow.description && (
+							<p className="text-sm text-zinc-600 dark:text-zinc-400">{flow.description}</p>
+						)}
+						{notices.map((notice) => (
+							<p key={notice} className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+								{notice}
+							</p>
+						))}
+						{canCompose && (
+							<p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+								Haz clic en un botón o enlace de un espejo para añadir la pantalla a la que lleva;
+								cada fila termina en «+ Añadir pantalla».
+							</p>
 						)}
 					</div>
-					{flow.description && (
-						<p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{flow.description}</p>
-					)}
-					{canCompose && (
-						<p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-							Haz clic en un botón o enlace de un espejo para añadir la pantalla a la que lleva;
-							cada fila termina en «+ Añadir pantalla».
-						</p>
-					)}
-					{removing?.error && (
-						<p role="alert" className="mt-1 text-[11px] text-red-700 dark:text-red-300">
-							{removing.error}
-						</p>
-					)}
-					{unbuilt > 0 && (
-						// The card says it per step; the header says it once, so a
-						// storyboard that is mostly specification is not mistaken for
-						// a storyboard that is mostly broken.
-						<p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
-							{unbuilt} {unbuilt === 1 ? "paso por construir" : "pasos por construir"} — se muestran
-							sus especificaciones; se vuelven espejos reales cuando sus páginas aterricen.
-						</p>
-					)}
-					{stats.untraceableHrefs > 0 && (
-						// Said out loud rather than implied: the storyboard is built
-						// from links the scanner could resolve, and this is how many
-						// it could not.
-						<p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-							{stats.untraceableHrefs} enlaces con destino calculado no se pudieron rastrear, así
-							que puede faltar algún paso.
-						</p>
-					)}
-					{stats.droppedFlows > 0 && (
-						// Same rule: the rail shows a capped list, and a silent cap
-						// reads as "that is all of them".
-						<p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-							{stats.droppedFlows} recorridos adicionales encontrados y no mostrados; declara los
-							que importen en workbench.config.json.
-						</p>
-					)}
-				</header>
+				</details>
+				{notices.length > 0 && (
+					// Said out loud regardless of the disclosure: "whenever the
+					// scan can't see something, it says so".
+					<ul className="sr-only">
+						{notices.map((notice) => (
+							<li key={notice}>{notice}</li>
+						))}
+					</ul>
+				)}
+				{removing?.error && (
+					<p
+						role="alert"
+						className="min-w-0 flex-1 truncate text-[11px] text-red-700 dark:text-red-300"
+						title={removing.error}
+					>
+						{removing.error}
+					</p>
+				)}
 
 				{canCompose && (
 					<datalist id={ROUTES_LIST}>
@@ -1152,60 +752,61 @@ export function FlowsPanel({
 						))}
 					</datalist>
 				)}
+			</div>
 
-				<div ref={pickRef} tabIndex={-1}>
-					<div className="space-y-8">
-						{themes.map((mode, slot) => (
-							// Keyed by slot, not by mode: with a `mode` key, toggling
-							// light↔dark remounted the whole board — every frame
-							// refetched for a class flip. By slot, the first board
-							// re-renders in place and only split mounts a second one.
-							<div key={slot === 0 ? "a" : "b"}>
-								{themes.length > 1 && (
-									<p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-										{mode === "light" ? "Claro" : "Oscuro"}
-									</p>
-								)}
-								<ThemedBoard
-									flow={flow}
-									lanes={lanes}
-									scale={scale}
-									theme={mode}
-									nonce={nonce}
-									editing={editing}
-									slot={slot}
-									frames={frames}
-									active={active}
-									onCapture={onCapture}
-									onActivate={onActivate}
-									onRefresh={onRefresh}
-									onDemote={onDemote}
-									registerLiveFrame={registerLiveFrame}
-									composer={composerProps}
-								/>
-							</div>
-						))}
-					</div>
-				</div>
+			<div ref={pickRef} tabIndex={-1} className="min-h-0 flex-1">
+				<CanvasBoard
+					flow={flow}
+					lanes={lanes}
+					themes={themes}
+					nonce={nonce}
+					editing={editing}
+					frames={frames}
+					active={active}
+					// Only the SLOT COUNT changes the geometry: a light↔dark flip
+					// lays out identically, and refitting on it threw away the
+					// user's pan for a palette change.
+					fitKey={`${viewport}:${themes.length}`}
+					shape={shape}
+					onCapture={onCapture}
+					onActivate={onActivate}
+					onRefresh={onRefresh}
+					onDemote={onDemote}
+					registerLiveFrame={registerLiveFrame}
+					composer={composerProps}
+					onViewportChange={onCanvasViewport}
+					onDetailChange={setDetail}
+				/>
 			</div>
 
 			{connectHover && !connect && !editing && (
 				<Outline
 					rect={connectHover.pick.rect}
 					tone="sky"
-					label={`«${connectHover.pick.text || "control"}»${connectHover.route ? ` → ${connectHover.route}` : ""}`}
+					label={`«${connectHover.pick.text || "control"}»${
+						connectHover.route ? ` → ${connectHover.route}` : ""
+					}`}
+					hint={connectHover.parked ? EN_CURSO : connectGestures(connectHover.intent)}
 				/>
 			)}
 			{connect && (
 				<ConnectPopover
 					pick={connect.pick}
 					route={connect.route}
-					mode={connect.mode}
+					intent={connect.intent}
 					onConfirm={confirmConnect}
-					onCancel={() => {
-						setConnect(null);
-						pickRef.current?.focus();
-					}}
+					// `useFloating` returns focus to the canvas host on close, for
+					// every one of the six ways this can be dismissed — this used
+					// to be hand-rolled here and covered only the cancel button.
+					//
+					// Functional and identity-checked, because one of those six is
+					// a window blur, and the gesture that opens the NEXT popover
+					// causes exactly such a blur by moving focus into a mirror.
+					// Whether it lands before or after the click that re-anchors
+					// is browser-dependent; if it lands after, an unconditional
+					// clear here would discard the popover the click had just
+					// opened. A box may close itself, never its successor.
+					onCancel={() => setConnect((open) => (open === connect ? null : open))}
 				/>
 			)}
 		</div>

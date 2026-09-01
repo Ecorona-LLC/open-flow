@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { forkPrefix, laneKey, layOut, rowExtents, type Lane } from "./flow-layout";
+import { laneKey, layOut, type Lane } from "./flow-layout";
 import type { Flow, FlowStep, Viewport } from "./manifest.types";
-import { FRAME_CHROME, STEP_GUTTER } from "./screen-frame";
 
 const movil: Viewport = { id: "movil", label: "Móvil", width: 390, height: 844, note: null };
 const escritorio: Viewport = {
@@ -14,7 +13,7 @@ const escritorio: Viewport = {
 const viewportOf = (id: string) => (id === "escritorio" ? escritorio : movil);
 
 function step(route: string, viewport = "movil", exists = true): FlowStep {
-	return { label: route, route, via: null, viewport, note: null, spec: null, exists };
+	return { label: route, route, via: null, viewport, note: null, notice: null, spec: null, exists };
 }
 
 function flow(steps: FlowStep[], branches: Flow["branches"] = []): Flow {
@@ -75,7 +74,6 @@ describe("layOut", () => {
 		expect(lane.from).toBe(4);
 		expect(lane.fork).toBeNull();
 		expect(lane.nodes.map((node) => node.number)).toEqual([6]);
-		expect(forkPrefix(lanes, lane.fork)).toEqual([]);
 	});
 
 	it("honours each step's own viewport", () => {
@@ -97,42 +95,5 @@ describe("layOut", () => {
 		expect(branch(lanes[2]).index).toBe(1);
 		expect(laneKey(null)).toBe("trunk");
 		expect(laneKey("tier-2")).toBe("branch:tier-2");
-	});
-});
-
-describe("rowExtents", () => {
-	it("a branch row counts the trunk columns it starts after", () => {
-		const { lanes } = layOut(login, viewportOf);
-		expect(forkPrefix(lanes, 1)).toEqual([390, 390]);
-		const [trunk, tier1, tier2] = rowExtents(lanes);
-		expect(trunk).toEqual({ natural: 780, gutters: 2 * FRAME_CHROME + STEP_GUTTER });
-		expect(tier1).toEqual({ natural: 1170, gutters: 3 * FRAME_CHROME + 2 * STEP_GUTTER });
-		expect(tier2).toEqual({
-			natural: 780 + 1440 + 390,
-			gutters: 4 * FRAME_CHROME + 3 * STEP_GUTTER,
-		});
-	});
-
-	it("counts the composer's tails: a ghost column per row and the fork row", () => {
-		// `fit` must know about the ghost and the card, or opening one puts a
-		// scrollbar on a board whose promise is that it fits.
-		const { lanes } = layOut(login, viewportOf);
-		const rows = rowExtents(lanes, {
-			tail: new Map([
-				[laneKey(null), 390],
-				[laneKey("tier-1"), 390],
-			]),
-			forkRow: { fork: 1, width: 390 },
-		});
-		expect(rows).toHaveLength(4);
-		expect(rows[0]).toEqual({ natural: 1170, gutters: 3 * FRAME_CHROME + 2 * STEP_GUTTER });
-		expect(rows[1]).toEqual({ natural: 1560, gutters: 4 * FRAME_CHROME + 3 * STEP_GUTTER });
-		// tier-2 asked for no tail and is unchanged.
-		expect(rows[2]).toEqual({
-			natural: 780 + 1440 + 390,
-			gutters: 4 * FRAME_CHROME + 3 * STEP_GUTTER,
-		});
-		// The authored branch row: the trunk prefix through the fork, then the card.
-		expect(rows[3]).toEqual({ natural: 1170, gutters: 3 * FRAME_CHROME + 2 * STEP_GUTTER });
 	});
 });

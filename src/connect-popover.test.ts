@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { placePopover } from "./connect-popover";
+import { placePopover, sameSpot } from "./floating";
 
 const SIZE = { width: 256, height: 90 };
 const VIEWPORT = { width: 1280, height: 800 };
@@ -26,5 +26,17 @@ describe("placePopover", () => {
 			height: 100,
 		});
 		expect(cramped.top).toBe(8);
+	});
+});
+
+describe("sameSpot", () => {
+	it("is the bail-out that keeps a placement from re-rendering itself forever", () => {
+		// `useFloating` places on every render; without this the fresh object
+		// `placePopover` returns is always new state, and the loop crashed a tab.
+		expect(sameSpot({ top: 10, left: 20 }, { top: 10, left: 20 })).toBe(true);
+		expect(sameSpot({ top: 10, left: 20 }, { top: 10, left: 21 })).toBe(false);
+		expect(sameSpot({ top: 10, left: 20 }, { top: 11, left: 20 })).toBe(false);
+		// Nothing placed yet is never the same spot — the first paint must run.
+		expect(sameSpot(null, { top: 0, left: 0 })).toBe(false);
 	});
 });

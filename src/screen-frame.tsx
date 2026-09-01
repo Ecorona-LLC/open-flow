@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { EDGE_VAR, ZOOM_VAR } from "./canvas-gestures";
 import { FrameShell } from "./frame";
 import type { Viewport } from "./manifest.types";
 import { PickBox } from "./pick-box";
@@ -94,14 +95,6 @@ export function columnWidth(width: number, scale: number): number {
 	return framedWidth(width, scale) + FRAME_CHROME;
 }
 
-/** The laid-out width of a row of columns at a scale, gutters included. */
-export function rowWidth(widths: readonly number[], scale: number): number {
-	return (
-		widths.reduce((total, width) => total + columnWidth(width, scale), 0) +
-		Math.max(0, widths.length - 1) * STEP_GUTTER
-	);
-}
-
 /**
  * The scale that fits EVERY row. Not "fit the widest row": gutters do not
  * scale and frames do, so the row that is widest at 100% is not always the one
@@ -147,6 +140,7 @@ export function ScreenFrame({
 	label,
 	children,
 	editing,
+	bare = false,
 }: {
 	viewport: Viewport;
 	scale: number;
@@ -154,6 +148,13 @@ export function ScreenFrame({
 	children: ReactNode;
 	/** Arms picking on the screen itself — never on this frame's chrome. */
 	editing?: boolean;
+	/**
+	 * Drop the shell's header row entirely. The flow canvas draws a screen's
+	 * name and size as constant-size chrome above it, so an in-frame header
+	 * would say the same thing twice — and its `· 100%` would be a lie, since
+	 * on the canvas the scale that varies is the viewport's, not the frame's.
+	 */
+	bare?: boolean;
 }) {
 	// The column is bounded to the scaled frame plus the shell's own padding.
 	// Without a bound the header text sets the min-width — a 390px phone at 33%
@@ -163,10 +164,24 @@ export function ScreenFrame({
 	const framedHeight = framedWidth(viewport.height, scale);
 
 	return (
-		<div style={{ width: columnWidth(viewport.width, scale) }}>
+		<div
+			// An inline style, not an arbitrary Tailwind class: every sibling
+			// variable is set this way, and a class only exists if the HOST's
+			// Tailwind scanned `dist/`. The failure would be silent — the
+			// fallback is a world pixel, and the board goes back to reading as
+			// flat rectangles, which is the bug this exists to fix.
+			style={
+				{
+					width: columnWidth(viewport.width, scale),
+					[EDGE_VAR]: `calc(1px / var(${ZOOM_VAR}, 1))`,
+				} as React.CSSProperties
+			}
+		>
 			<FrameShell
-				label={label}
-				meta={`${viewport.width}×${viewport.height} · ${Math.round(scale * 100)}%`}
+				label={bare ? undefined : label}
+				meta={
+					bare ? undefined : `${viewport.width}×${viewport.height} · ${Math.round(scale * 100)}%`
+				}
 			>
 				<div className="bg-zinc-100 p-3 dark:bg-zinc-800">
 					<PickBox enabled={editing}>

@@ -125,9 +125,10 @@ export function WorkbenchApp({
 		onOpenRequest: session.openDrawer,
 		showChrome,
 		initialViewport: view.vp,
-		initialZoom: asZoom(view.zoom),
 		initialTheme: asTheme(view.theme),
 	};
+	// Only Componentes still has preset zoom; the flow canvas zooms itself.
+	const initialZoom = asZoom(view.zoom);
 
 	const needle = filter.trim().toLowerCase();
 	// Memoized: this runs on EVERY keystroke into the filter box, and the
@@ -204,7 +205,12 @@ export function WorkbenchApp({
 			);
 		}
 		return component ? (
-			<ComponentsPanel entry={component} registry={registry} {...shared} />
+			<ComponentsPanel
+				entry={component}
+				registry={registry}
+				{...shared}
+				initialZoom={initialZoom}
+			/>
 		) : (
 			<Empty what="componentes" hint="Revisa `componentRoots` en workbench.config.json." />
 		);

@@ -57,8 +57,11 @@ export function SegmentedControl<T extends string | number>({
 				<button
 					key={String(option.id)}
 					type="button"
-					disabled={disabled}
-					onClick={() => onChange(option.id)}
+					// `aria-disabled`, not `disabled`: the REASON is the point, and
+					// a tooltip on an unfocusable control reaches nobody — the same
+					// rule the board's blocked «quitar» chip follows.
+					aria-disabled={disabled || undefined}
+					onClick={disabled ? undefined : () => onChange(option.id)}
 					title={disabled ? disabledReason : (option.note ?? undefined)}
 					className={cx(
 						"rounded px-2 py-1 text-[11px] font-medium transition-colors",
@@ -107,6 +110,7 @@ export function ScreenToolbar({
 	theme,
 	onTheme,
 	hint,
+	zoomDisabledReason,
 	actions,
 	identity,
 	backHref,
@@ -120,11 +124,20 @@ export function ScreenToolbar({
 	/** `AUTO`, or a viewport id from the manifest. */
 	viewport: string;
 	onViewport: (next: string) => void;
-	zoom: Zoom;
-	onZoom: (next: Zoom) => void;
+	/** Absent together: the panel has no preset zoom (the flow canvas zooms
+	 *  itself), the control shows «Ajustar» disabled, and the isolated URL
+	 *  carries no `zoom`. */
+	zoom?: Zoom;
+	onZoom?: (next: Zoom) => void;
 	theme: ThemeMode;
 	onTheme: (next: ThemeMode) => void;
 	hint?: ReactNode;
+	/**
+	 * Why the zoom presets cannot act. The control keeps its slot — the row is
+	 * identical on every panel — but says so: Flujos' canvas has its own zoom,
+	 * and on Componentes in Auto there is no frame to scale.
+	 */
+	zoomDisabledReason?: string;
 	/** Panel-specific actions — e.g. "Recargar cuadros" on Flujos. */
 	actions?: ReactNode;
 	/**
@@ -164,7 +177,9 @@ export function ScreenToolbar({
 				new URLSearchParams({
 					...isolatedBase,
 					vp: viewport,
-					zoom: String(zoom),
+					// No `zoom` when the panel has none: the isolated canvas
+					// opens at fit, which is the only zoom it understands.
+					...(zoom === undefined ? {} : { zoom: String(zoom) }),
 					theme,
 					chrome: "off",
 				}),
@@ -204,11 +219,14 @@ export function ScreenToolbar({
 			</Labelled>
 			<Labelled label="Zoom">
 				<SegmentedControl<Zoom>
-					value={zoom}
-					onChange={onZoom}
+					value={zoom ?? "fit"}
+					onChange={onZoom ?? (() => {})}
 					options={ZOOMS}
-					disabled={!zoomEnabled}
-					disabledReason="En Auto el componente se dibuja en línea, sin cuadro que escalar."
+					disabled={!zoomEnabled || onZoom === undefined}
+					disabledReason={
+						zoomDisabledReason ??
+						"En Auto el componente se dibuja en línea, sin cuadro que escalar."
+					}
 				/>
 			</Labelled>
 			<Labelled label="Tema">

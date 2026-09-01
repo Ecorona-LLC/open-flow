@@ -10,7 +10,18 @@ export type Viewport = { id: string, label: string, width: number, height: numbe
  */
 note: string | null, };
 
-export type ViewerConfig = { title: string, subtitle: string, mountPath: string, groupLabels: { [key in string]: string }, viewports: Array<Viewport>, };
+export type ViewerConfig = { title: string, subtitle: string, mountPath: string, groupLabels: { [key in string]: string }, viewports: Array<Viewport>, 
+/**
+ * The most screens a journey may hold, trunk and branches together.
+ *
+ * Sent because the storyboard offers «+ pantalla» and «+ rama» on every
+ * screen and every control, and without it the offer stands on a full
+ * journey right up until the engine refuses it — after the specification
+ * has been typed. The alternative was a `12` written a second time in
+ * TypeScript, which is the hand-synchronised constant this crate exists
+ * to make impossible.
+ */
+maxFlowSteps: number, };
 
 export type TokenKind = "color" | "value";
 
@@ -114,7 +125,23 @@ via: string | null,
 /**
  * A `Viewport.id`, already resolved against the config.
  */
-viewport: string, note: string | null, 
+viewport: string, 
+/**
+ * The author's own caption, echoed back untouched by an edit.
+ */
+note: string | null, 
+/**
+ * The scan's own remark about this step, kept apart from `note` because
+ * the board re-sends the whole flow on every edit and cannot tell an
+ * authored value from a derived one.
+ *
+ * It used to be CONCATENATED onto `note`, so the first gesture on a
+ * trimmed journey wrote «Se declararon 14 pasos; se muestran los primeros
+ * 12.» into `workbench.config.json` as if a person had typed it, where it
+ * then outlived the trim it described and collected a second copy on the
+ * next scan. Derived, so it never travels back.
+ */
+notice: string | null, 
 /**
  * What this screen must do. Present on a step somebody authored; absent on
  * one the spider found, which by definition already exists.
@@ -228,4 +255,4 @@ export type OverlaySurface = { id: string, label: string, weight: Weight, predic
 
 export type OverlayManifest = { version: number, config: ViewerConfig, components: Array<OverlayComponent>, routes: Array<OverlayRoute>, surfaces: Array<OverlaySurface>, };
 
-export const MANIFEST_VERSION = 2;
+export const MANIFEST_VERSION = 3;

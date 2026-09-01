@@ -1,5 +1,7 @@
 "use client";
 
+import { readSketch, type Sketch } from "./screen-sketch";
+
 /**
  * Mirrors — a captured snapshot of a live frame, so the storyboard can show
  * every step while at most one step is a live document.
@@ -127,15 +129,23 @@ export function whenQuiet(
 	});
 }
 
+/** What one successful capture yields. */
+export interface Capture {
+	srcdoc: string;
+	/** The page's shape, for the canvas to draw when it is too far away for
+	 *  the page itself to be legible. Null when it could not be measured. */
+	sketch: Sketch | null;
+}
+
 /**
- * Capture a loaded live frame into mirror HTML, or `null` when it cannot be
+ * Capture a loaded live frame into a mirror, or `null` when it cannot be
  * done — the caller's contract is that `null` means "leave the frame live",
  * never "show nothing".
  */
 export async function captureMirror(
 	frame: HTMLIFrameElement,
 	route: string,
-): Promise<string | null> {
+): Promise<Capture | null> {
 	try {
 		const doc = frame.contentDocument;
 		if (!doc) return null;
@@ -149,7 +159,19 @@ export async function captureMirror(
 		// the mirror of the new page resolve against the old one.
 		const liveRoute = frame.contentWindow?.location.pathname ?? route;
 		const html = serializeMirror(settled, liveRoute, window.location.origin);
-		return html.length > MIRROR_MAX_BYTES ? null : html;
+		if (html.length > MIRROR_MAX_BYTES) return null;
+		// Measured from the LIVE document, now, while the geometry exists: the
+		// mirror runs no script and can never be asked for a rect later.
+		let sketch: Sketch | null = null;
+		try {
+			sketch = readSketch(settled, {
+				width: frame.contentWindow?.innerWidth ?? frame.clientWidth,
+				height: frame.contentWindow?.innerHeight ?? frame.clientHeight,
+			});
+		} catch {
+			// A sketch is an enhancement; the mirror is the contract.
+		}
+		return { srcdoc: html, sketch };
 	} catch {
 		// Cross-origin, detached, mid-teardown — all mean "stay live".
 		return null;

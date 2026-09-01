@@ -1,4 +1,5 @@
 import type { StepNode } from "./flow-layout";
+import type { Sketch } from "./screen-sketch";
 
 /**
  * The sweep's ledger, keyed by `StepNode.key` — never by position.
@@ -17,7 +18,10 @@ export type StepFrame =
 	/** `ticket` is monotonic per capture attempt, so the watchdog and the
 	 *  resolution can tell "still THIS capture" from "a newer one". */
 	| { kind: "capturing"; ticket: number }
-	| { kind: "mirrored"; srcdoc: string; capturedAt: number }
+	/** `sketch` is what the canvas draws at a distance instead of minifying
+	 *  the page into mush; it is measured during this same capture, because
+	 *  the mirror is inert and could never be asked afterwards. */
+	| { kind: "mirrored"; srcdoc: string; sketch: Sketch | null; capturedAt: number }
 	/** Never settled or never loaded; the frame stays live instead. */
 	| { kind: "restless" }
 	/** No page at this route yet: a spec card, outside the sweep entirely. */

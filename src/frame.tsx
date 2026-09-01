@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useContext, useEffect, useRef, type ReactNode } from "react";
+import { CanvasGesturesContext, EDGE_VAR } from "./canvas-gestures";
 import { cx } from "./cx";
+import { ctaOf, CTA_MAX_DEPTH, semanticCtaOf, type CtaCandidate } from "./cta";
 import { isElement, readProp } from "./dom-realm";
 import { PickBox } from "./pick-box";
 // A module cycle (frame → pick-highlight → screen-frame → frame), and a safe
 // one: every binding is referenced inside a function body, never while the
 // modules evaluate. Taken over a second copy of the rect mapping, whose two
 // independent derivations are exactly the bug `mapRect`'s doc names.
-import { mapRect } from "./pick-highlight";
+import { mapPoint, mapRect } from "./pick-highlight";
 
 /**
  * Frame primitives — the only place the workbench paints app surfaces.
@@ -43,10 +45,25 @@ export function FrameShell({
 	return (
 		<div
 			className={cx(
-				"overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm",
-				"dark:border-zinc-700 dark:bg-zinc-900",
+				"overflow-hidden border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-900",
 				className,
 			)}
+			// Border, radius and shadow in screen px via `--wb-edge`, so a frame
+			// is an OBJECT at 12% and at 200% alike. The old `border rounded-lg
+			// shadow-sm` rendered at 0.12px / 0.96px / 0.12px blur when the
+			// canvas was fitted — present in the markup, absent on the screen.
+			style={{
+				borderWidth: `var(${EDGE_VAR}, 1px)`,
+				borderStyle: "solid",
+				// Capped as a share of the box: the fit is deliberately not
+				// floored, so at z = 0.05 an 8-screen-px radius is 160 world px
+				// and a phone frame becomes a stadium.
+				borderRadius: `min(calc(var(${EDGE_VAR}, 1px) * 8), 6%)`,
+				// The weight `shadow-sm` had, in screen pixels. Heavier would be
+				// a silent restyle of Componentes and the isolated frame view,
+				// which share this shell and were not part of this change.
+				boxShadow: `0 calc(var(${EDGE_VAR}, 1px) * 1) calc(var(${EDGE_VAR}, 1px) * 2) rgb(0 0 0 / 0.05)`,
+			}}
 		>
 			{(label || meta) && (
 				<div className="flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-1.5 text-[11px] font-medium tracking-wide text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
@@ -164,8 +181,11 @@ export function RouteFrame({
 	);
 }
 
-/** What a click on an actionable element inside a mirror carries. */
+/** What a click on a control inside a mirror carries. */
 export interface MirrorPick {
+	/** Which gesture asked. A right-click means "make this a branch"; the
+	 *  panel still decides whether that is legal here. */
+	wants: "append" | "fork";
 	/** Visible text of the control, collapsed, at most 80 characters. */
 	text: string;
 	/** The anchor's resolved href — absolute, thanks to the `<base>` the
@@ -175,8 +195,70 @@ export interface MirrorPick {
 	rect: { top: number; left: number; width: number; height: number };
 }
 
-/** What counts as "a control that leads somewhere" inside a mirror. */
-export const ACTIONABLE = 'a[href], button, [role="button"], input[type="submit"]';
+/**
+ * What a person would call this control. One writer, because the string that
+ * decides whether something IS a control and the string the popover shows for
+ * it are the same question — asked twice, they answered differently for the
+ * same element.
+ */
+function nameOf(element: Element): string {
+	const value = element.tagName === "INPUT" ? String(readProp(element, "value") ?? "") : "";
+	return (
+		value ||
+		element.getAttribute("aria-label") ||
+		element.getAttribute("title") ||
+		element.textContent ||
+		""
+	);
+}
+
+/**
+ * Read one element the way `cta.ts` wants it. The DOM lives here; the RULE
+ * lives there, so it can be tested against literals.
+ *
+ * `styled` is the expensive half — `getComputedStyle`, a layout read and a
+ * whole-subtree `textContent`. It is skipped on the first pass because
+ * `isSemanticCta` reads none of it, and the first pass answers for every
+ * `<button>` and `<a href>` on earth. That matters because this runs from a
+ * capture-phase `mouseover`: paying it per ancestor per element crossed turned
+ * the app's busiest event into a reflow storm inside a display-locked
+ * document.
+ */
+function candidateOf(element: Element, frameArea: number, styled: boolean): CtaCandidate {
+	const view = styled ? element.ownerDocument.defaultView : null;
+	const rect = styled ? element.getBoundingClientRect() : null;
+	return {
+		tag: element.tagName.toUpperCase(),
+		role: element.getAttribute("role")?.toLowerCase() ?? null,
+		type: element.getAttribute("type")?.toLowerCase() ?? null,
+		href: element.hasAttribute("href"),
+		onclick: element.hasAttribute("onclick"),
+		disabled: element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true",
+		// Placeholders on the cheap pass. `semanticCtaOf` is what makes that
+		// safe — it reads none of these three — where running the whole rule
+		// would have asked `isStyledCta` about a cursor and a name we invented.
+		cursor: view ? view.getComputedStyle(element).cursor : "auto",
+		name: styled ? nameOf(element) : "",
+		share: rect && frameArea > 0 ? (rect.width * rect.height) / frameArea : 1,
+	};
+}
+
+/**
+ * A value the listeners can read without being re-armed for it.
+ *
+ * The arm effect attaches to the iframe's document on load and must NOT re-run
+ * on a prop flip — tearing listeners down mid-load is the bug `useInspect`
+ * documents. So every prop those listeners consult comes through here. Three
+ * hand-rolled copies of this in one file was where the idiom stopped being
+ * premature to name.
+ */
+function useLatest<T>(value: T) {
+	const ref = useRef(value);
+	useEffect(() => {
+		ref.current = value;
+	}, [value]);
+	return ref;
+}
 
 /**
  * A captured snapshot of a route, rendered from `srcdoc` — see `mirror.ts` for
@@ -194,6 +276,7 @@ export function MirrorFrame({
 	height,
 	theme,
 	connect,
+	onMenu,
 }: {
 	srcdoc: string;
 	title: string;
@@ -208,33 +291,73 @@ export function MirrorFrame({
 	 * the bug `useInspect` documents.
 	 */
 	connect?: {
+		/**
+		 * The panel will ignore a pick right now — a card is open, or a write is
+		 * in flight. The gesture must not CLAIM the event then: a suppressed
+		 * browser menu with nothing of ours in its place reads as a broken
+		 * build, and the screen's own menu (which says «Hay una escritura en
+		 * curso») never gets the chance to explain. Dropping `connect` entirely
+		 * while busy would be wrong — it also unregisters the click handler that
+		 * stops an anchor navigating the mirror back to the live route.
+		 */
+		busy?: boolean;
 		onPick: (pick: MirrorPick | null) => void;
 		onHover: (pick: MirrorPick | null) => void;
 	};
+	/**
+	 * A right-click that hit no control, in PARENT viewport coordinates — the
+	 * screen's own menu. Separate from `connect` on purpose: the menu is
+	 * navigation, and it stays reachable while «Señalar» has the connect
+	 * gesture turned off.
+	 */
+	onMenu?: (at: { x: number; y: number }) => void;
 }) {
 	const ref = useRef<HTMLIFrameElement | null>(null);
-	const latest = useRef(connect);
-	useEffect(() => {
-		latest.current = connect;
-	}, [connect]);
+	const latest = useLatest(connect);
+	const menuRef = useLatest(onMenu);
+	// The canvas this mirror sits on, if any. Held in a ref like `connect`:
+	// the arm effect must not re-run on a context flip.
+	const gesturesRef = useLatest(useContext(CanvasGesturesContext));
 
 	useEffect(() => {
 		const frame = ref.current;
 		if (!frame) return;
+		// Read once per arm rather than per event — a parent layout read on a
+		// capture-phase `mouseover` is exactly the cost this pass removed. The
+		// effect re-runs on a size change, so `CTA_MAX_SHARE`'s leash cannot be
+		// left measuring against a frame that has resized under it.
+		const area = frame.clientWidth * frame.clientHeight;
 		// `isElement`, not `instanceof`: targets live in the frame's realm,
 		// where the parent's `Element` constructor never matches.
 		const controlOf = (target: EventTarget | null): Element | null => {
 			if (!isElement(target)) return null;
-			return target.closest(ACTIONABLE);
+			// The element and its nearest ancestors, so `ctaOf` can prefer a real
+			// control over the clickable card wrapping it.
+			const chain: Element[] = [];
+			for (
+				let node: Element | null = target;
+				node && chain.length < CTA_MAX_DEPTH;
+				node = node.parentElement
+			) {
+				chain.push(node);
+			}
+			// Cheap pass first. It reads attributes only, and it answers for
+			// every `<button>` and `<a href>` — which is most of what people
+			// navigate with — so the expensive pass usually never runs.
+			// `ctaOf` returns an element OF the array it was handed, so its
+			// index in that array is the matching element's index in the chain.
+			const cheap = chain.map((element) => candidateOf(element, area, false));
+			const semantic = semanticCtaOf(cheap);
+			if (semantic) return chain[cheap.indexOf(semantic)] ?? null;
+			const rich = chain.map((element) => candidateOf(element, area, true));
+			const styled = ctaOf(rich);
+			return styled ? (chain[rich.indexOf(styled)] ?? null) : null;
 		};
-		const pickOf = (control: Element): MirrorPick => {
+		const pickOf = (control: Element, wants: MirrorPick["wants"] = "append"): MirrorPick => {
 			const anchor = control.closest("a[href]");
-			const value = control.tagName === "INPUT" ? String(readProp(control, "value") ?? "") : "";
-			const text = (value || control.textContent || control.getAttribute("aria-label") || "")
-				.trim()
-				.replace(/\s+/g, " ")
-				.slice(0, 80);
+			const text = nameOf(control).trim().replace(/\s+/g, " ").slice(0, 80);
 			return {
+				wants,
 				text,
 				// The IDL property, not the attribute: resolved against the
 				// injected `<base>`, so a relative href arrives absolute.
@@ -254,8 +377,16 @@ export function MirrorFrame({
 		// fresh pick per crossing re-rendered the whole panel twice for every
 		// child boundary inside one button.
 		let hovered: Element | null = null;
+		let last: EventTarget | null = null;
 		const onOver = (event: Event) => {
 			if (!latest.current) return;
+			// A repeated crossing of the SAME element costs nothing. It does not
+			// help crossing between a button and its span — `mouseover` reports
+			// a different target for each — which is what the cheap semantic
+			// pass above is for; this only stops the walk re-running when the
+			// pointer re-enters an element it just left.
+			if (event.target === last) return;
+			last = event.target;
 			const control = controlOf(event.target);
 			if (control === hovered) return;
 			hovered = control;
@@ -263,7 +394,57 @@ export function MirrorFrame({
 		};
 		const onLeave = () => {
 			hovered = null;
+			last = null;
 			latest.current?.onHover(null);
+		};
+		// Right-click asks for a branch. Left-click keeps whatever the panel
+		// judges primary; this is how one screen's «Iniciar sesión» and «Crear
+		// cuenta» become two branches without opening a menu.
+		//
+		// Over a mirror, the browser's own menu is suppressed wherever the
+		// board offers one of its own — which, on the board, is everywhere. The
+		// mirror is an inert `srcdoc` whose native menu offers little (its
+		// "view source" is our serializer's output, its links are dead), and
+		// the storyboard owning the whole surface is worth more than that. A
+		// LIVE page is never touched: `RouteFrame` arms none of this.
+		//
+		// Typed `MouseEvent`, not `Event` + an assertion: `DocumentEventMap`
+		// already says a `contextmenu` is one, and the assertion would keep
+		// type-checking if this were ever also registered for a keydown.
+		const onContext = (event: MouseEvent) => {
+			// A parked gesture must not CLAIM the event — the panel would drop
+			// the pick in silence and the menu that explains why would never
+			// open.
+			const armed = latest.current && !latest.current.busy ? latest.current : null;
+			const control = armed ? controlOf(event.target) : null;
+			if (control && armed) {
+				event.preventDefault();
+				armed.onPick(pickOf(control, "fork"));
+				return;
+			}
+			// Not on a control: the screen itself was asked for its actions.
+			// Forwarded in parent coordinates, like the pinch below — the panel
+			// draws a `position: fixed` menu and cannot read this document's.
+			const open = menuRef.current;
+			if (!open) return;
+			event.preventDefault();
+			open(mapPoint(event.clientX, event.clientY, frame));
+		};
+		// The canvas' wheel listener never hears a wheel that lands on this
+		// document, so the pinch gesture (ctrl/⌘-wheel) is forwarded to it in
+		// parent coordinates — and preventDefault also stops the browser
+		// page-zooming the whole workbench over a mirror, which it did. A plain
+		// wheel stays with the mirror: scrolling a captured page is wanted.
+		//
+		// Mirrors only. `RouteFrame` is a LIVE page and its events are its own;
+		// at most one is mounted, and intercepting a real app's ctrl-wheel
+		// (maps, editors, canvases of its own) would be the workbench lying
+		// about what the page does.
+		const onWheel = (event: WheelEvent) => {
+			if (!event.ctrlKey && !event.metaKey) return;
+			event.preventDefault();
+			const at = mapPoint(event.clientX, event.clientY, frame);
+			gesturesRef.current?.zoomAtClient(at.x, at.y, event.deltaY, event.deltaMode);
 		};
 		const arm = () => {
 			try {
@@ -276,8 +457,16 @@ export function MirrorFrame({
 				// listener fires only when the pointer leaves the document —
 				// captured, it fired for every element left along the way.
 				doc.addEventListener("mouseleave", onLeave);
-			} catch {
-				// Sandbox misconfiguration would throw; nothing to arm then.
+				// Non-passive on purpose: a wheel listener is passive by default
+				// and a passive preventDefault is silently ignored.
+				doc.addEventListener("wheel", onWheel, { passive: false });
+				doc.addEventListener("contextmenu", onContext, true);
+			} catch (error) {
+				// Said out loud, unlike the teardown below: a throw here leaves
+				// the mirror with NO click, hover, wheel or contextmenu listener
+				// — the connect gesture and the screen menu both simply gone,
+				// permanently and reproducibly, with nothing to look at.
+				console.warn("[workbench] no se pudo armar el espejo", error);
 			}
 		};
 		// `srcdoc` parses asynchronously, so arm now for the document that may
@@ -291,11 +480,13 @@ export function MirrorFrame({
 				doc?.removeEventListener("click", onClick, true);
 				doc?.removeEventListener("mouseover", onOver, true);
 				doc?.removeEventListener("mouseleave", onLeave);
+				doc?.removeEventListener("wheel", onWheel);
+				doc?.removeEventListener("contextmenu", onContext, true);
 			} catch {
 				// Already torn down.
 			}
 		};
-	}, [theme, srcdoc]);
+	}, [theme, srcdoc, width, height]);
 
 	return (
 		<iframe

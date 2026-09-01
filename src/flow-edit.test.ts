@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+	actionFor,
 	appendStep,
 	bodyOf,
+	connectGestures,
+	connectIntent,
 	forkFrom,
 	forkResolvesTo,
 	hasStepAt,
@@ -10,6 +13,7 @@ import {
 	routeOfHref,
 	stepInputOf,
 	type ComposerTarget,
+	type PickedStep,
 } from "./flow-edit";
 import type { Flow, FlowStep } from "./manifest.types";
 
@@ -20,6 +24,7 @@ function step(route: string, extra: Partial<FlowStep> = {}): FlowStep {
 		via: null,
 		viewport: "movil",
 		note: null,
+		notice: null,
 		spec: null,
 		exists: true,
 		...extra,
@@ -100,6 +105,67 @@ describe("edits", () => {
 	});
 });
 
+describe("connectIntent", () => {
+	const picked = (over: Partial<PickedStep> = {}): PickedStep => ({
+		lane: "trunk",
+		position: 0,
+		isLast: true,
+		...over,
+	});
+
+	it("offers BOTH on the last trunk step — one screen, two branches", () => {
+		// The point of the rule. «Iniciar sesión» and «Crear cuenta» sit on the
+		// same last screen, and the engine takes a branch from any trunk step.
+		const intent = connectIntent(flow, picked(), "/nueva");
+		expect(intent.actions.map((action) => action.kind)).toEqual(["append", "fork"]);
+		expect(intent.note).toBeNull();
+	});
+
+	it("offers only the branch from a mid-trunk step, and says why", () => {
+		const intent = connectIntent(flow, picked({ isLast: false }), "/nueva");
+		expect(intent.actions.map((action) => action.kind)).toEqual(["fork"]);
+		expect(intent.note).toContain("al final de una fila");
+	});
+
+	it("offers only the continuation at a branch's end, and says why not a branch", () => {
+		const intent = connectIntent(flow, picked({ lane: "branch" }), "/nueva");
+		expect(intent.actions.map((action) => action.kind)).toEqual(["append"]);
+		// The engine's rule, not an invention of the panel's.
+		expect(intent.note).toContain("del tronco");
+	});
+
+	it("offers nothing mid-branch, and gives both reasons", () => {
+		const intent = connectIntent(flow, picked({ lane: "branch", isLast: false }), "/nueva");
+		expect(intent.actions).toEqual([]);
+		expect(intent.note).toContain("al final de una fila");
+		expect(intent.note).toContain("del tronco");
+	});
+
+	it("reports a route the flow already holds, by its step number", () => {
+		const intent = connectIntent(flow, picked(), "/registro");
+		expect(intent.existing).toEqual({ number: 2, label: "/registro" });
+		// Reporting it never removes the ability to add it again.
+		expect(intent.actions).not.toEqual([]);
+	});
+
+	it("still offers to add when the control leads nowhere traceable", () => {
+		const intent = connectIntent(flow, picked(), null);
+		expect(intent.actions.map((action) => action.kind)).toEqual(["append", "fork"]);
+		expect(intent.existing).toBeNull();
+	});
+
+	it("actionFor honours the gesture, and falls back to the primary", () => {
+		const both = connectIntent(flow, picked(), null);
+		expect(actionFor(both, "fork")?.kind).toBe("fork");
+		const branchEnd = connectIntent(flow, picked({ lane: "branch" }), null);
+		// Right-clicking where a branch is impossible offers the primary, so
+		// the popover can open and explain rather than doing nothing.
+		expect(actionFor(branchEnd, "fork")?.kind).toBe("append");
+		const nothing = connectIntent(flow, picked({ lane: "branch", isLast: false }), null);
+		expect(actionFor(nothing, "append")).toBeNull();
+	});
+});
+
 describe("board questions", () => {
 	it("knows a fork point and where a repeated route resolves", () => {
 		expect(isForkPoint(flow, 1)).toBe(true);
@@ -168,5 +234,45 @@ describe("board questions", () => {
 		expect(stepInputOf({ route: " /pago ", label: " Pago ", spec: "", via: " " }, "movil")).toEqual(
 			{ route: "/pago", label: "Pago", viewport: "movil" },
 		);
+	});
+});
+
+describe("connectGestures", () => {
+	const at = (lane: "trunk" | "branch", isLast: boolean) =>
+		connectGestures(connectIntent(flow, { lane, position: 0, isLast }, null));
+
+	it("names one gesture per button, and only the buttons that do something", () => {
+		// The last trunk step is the whole point of the round: both buttons work.
+		expect(at("trunk", true)).toBe("clic seguir · clic derecho ramificar");
+		// Mid-trunk: only a branch is expressible, so the LEFT button does it.
+		expect(at("trunk", false)).toBe("clic ramificar");
+		expect(at("branch", true)).toBe("clic seguir");
+	});
+
+	it("says so when neither button does anything", () => {
+		expect(at("branch", false)).toBe("aquí no se puede añadir");
+	});
+});
+
+describe("bodyOf and the derived fields", () => {
+	it("never sends the scan's own remark back to the engine", () => {
+		// The bug this seals: the trim sentence used to ride in `note`, which
+		// IS re-sent, so one board gesture wrote the scanner's diagnostic into
+		// the human's config as authored prose. `notice` is derived and the
+		// wire type has no room for it — pinned here so widening
+		// `FlowStepInput` cannot quietly re-open the path.
+		const trimmed: Flow = {
+			...flow,
+			steps: [
+				step("/a", {
+					note: "El CTA debe leerse sin desplazar.",
+					notice: "Se declararon 14 pasos; se muestran 12.",
+				}),
+			],
+			branches: [],
+		};
+		const sent = bodyOf(trimmed);
+		expect(sent.steps[0]?.note).toBe("El CTA debe leerse sin desplazar.");
+		expect("notice" in (sent.steps[0] ?? {})).toBe(false);
 	});
 });

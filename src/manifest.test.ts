@@ -27,6 +27,7 @@ function config(viewports: Viewport[] = []): ViewerConfig {
 		subtitle: "",
 		mountPath: "/workbench",
 		groupLabels: {},
+		maxFlowSteps: 12,
 		viewports,
 	};
 }

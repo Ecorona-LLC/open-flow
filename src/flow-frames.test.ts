@@ -18,6 +18,7 @@ function node(key: string, exists = true): StepNode {
 		via: null,
 		viewport: "movil",
 		note: null,
+		notice: null,
 		spec: null,
 		exists,
 	};
@@ -46,14 +47,19 @@ describe("nextCapture", () => {
 		expect(nextCapture(NO_FRAMES, nodes)).toBe("a");
 		const capturing = withFrame(NO_FRAMES, "a", { kind: "capturing", ticket: 1 });
 		expect(nextCapture(capturing, nodes)).toBeNull();
-		const done = withFrame(NO_FRAMES, "a", { kind: "mirrored", srcdoc: "x", capturedAt: 1 });
+		const done = withFrame(NO_FRAMES, "a", {
+			kind: "mirrored",
+			srcdoc: "x",
+			sketch: null,
+			capturedAt: 1,
+		});
 		expect(nextCapture(done, nodes)).toBe("c");
 	});
 });
 
 describe("prune", () => {
 	it("keeps unchanged keys' mirrors across an append and drops a removed tail", () => {
-		const mirror = { kind: "mirrored", srcdoc: "x", capturedAt: 1 } as const;
+		const mirror = { kind: "mirrored", srcdoc: "x", sketch: null, capturedAt: 1 } as const;
 		let frames: Frames = withFrame(
 			withFrame(NO_FRAMES, "trunk:0:/", mirror),
 			"trunk:1:/registro",
@@ -74,7 +80,7 @@ describe("prune", () => {
 		// A snapshot of a deleted page must not resurface if the route is
 		// later rebuilt — and its srcdoc has no business parked under a spec
 		// card.
-		const mirror = { kind: "mirrored", srcdoc: "x", capturedAt: 1 } as const;
+		const mirror = { kind: "mirrored", srcdoc: "x", sketch: null, capturedAt: 1 } as const;
 		const frames = withFrame(NO_FRAMES, "trunk:0:/", mirror);
 		const unbuilt = prune(frames, [node("trunk:0:/", false)]);
 		expect(unbuilt.has("trunk:0:/")).toBe(false);

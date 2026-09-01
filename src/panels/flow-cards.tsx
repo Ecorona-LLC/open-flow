@@ -3,7 +3,7 @@
 import { type ReactNode } from "react";
 import { cx } from "../cx";
 import type { FlowStep, Viewport } from "../manifest.types";
-import { framedWidth } from "../screen-frame";
+import type { Sketch } from "../screen-sketch";
 
 /**
  * The storyboard's non-frame columns: what a step shows when it is not a
@@ -36,6 +36,88 @@ export function Stage({
 		>
 			{children}
 		</div>
+	);
+}
+
+/**
+ * A screen as it reads from across the room.
+ *
+ * The canvas stops drawing the page below the detail threshold, because a
+ * page drawn at an eighth of its size is not a small page, it is mush — a
+ * 16px line lands on under two device pixels. This draws its SHAPE instead:
+ * the biggest boxes the document actually laid out, as vector, so it stays
+ * sharp at any zoom and costs no iframe at all.
+ *
+ * Everything here is world-px and scales with the board, ON PURPOSE: a card
+ * that counter-scaled would grow past the box it stands in. The name above it
+ * is the part that stays readable, and that is chrome.
+ */
+export function SketchCard({
+	sketch,
+	viewport,
+	theme,
+	tone,
+}: {
+	sketch: Sketch | null;
+	viewport: Viewport;
+	theme: "light" | "dark";
+	/** The state accent. A live page never reaches this card — it keeps its
+	 *  own frame at every distance — so the only state worth a colour is the
+	 *  one that is not a page yet. */
+	tone: "mirror" | "unbuilt";
+}) {
+	return (
+		<Stage
+			viewport={viewport}
+			theme={theme}
+			className="relative overflow-hidden bg-white dark:bg-zinc-900"
+		>
+			{/* Only the exceptional state gets a hairline. A zinc bar inside a
+			    zinc border said nothing, and a card with no bar reading as
+			    "ordinary" is the information. */}
+			{tone === "unbuilt" && (
+				<div
+					className="absolute inset-x-0 top-0 bg-amber-400"
+					style={{ height: viewport.height * 0.012 }}
+				/>
+			)}
+			{sketch && sketch.boxes.length > 0 ? (
+				<svg
+					aria-hidden
+					viewBox="0 0 100 100"
+					preserveAspectRatio="none"
+					className="h-full w-full"
+					style={{ padding: viewport.width * 0.04 }}
+				>
+					{sketch.boxes.map((box, index) => (
+						<rect
+							key={index}
+							x={box.x * 100}
+							y={box.y * 100}
+							width={box.w * 100}
+							height={box.h * 100}
+							rx={0.6}
+							className={
+								box.kind === "text"
+									? "fill-zinc-400/70 dark:fill-zinc-500/70"
+									: box.kind === "media"
+										? "fill-zinc-300 dark:fill-zinc-700"
+										: "fill-zinc-200/60 dark:fill-zinc-800/60"
+							}
+						/>
+					))}
+				</svg>
+			) : (
+				<div className="flex h-full w-full items-center justify-center">
+					<p
+						className="text-zinc-300 dark:text-zinc-600"
+						style={{ fontSize: viewport.width * 0.06 }}
+					>
+						{tone === "unbuilt" ? "Por construir" : "Sin vista previa"}
+					</p>
+				</div>
+			)}
+		</Stage>
 	);
 }
 
@@ -259,28 +341,27 @@ export function TailPlaceholder({
 	);
 }
 
-/** A ghost column's natural width. Narrower than a desktop viewport on
- *  purpose: at `fit`, a full-width ghost on every row costs real scale. */
-export const GHOST_WIDTH = 390;
-
 /**
- * The dashed "+ Añadir pantalla" that ends every row: a button the size of
- * the column the new screen would take, drawn in the parent document (no
- * transform — plain text reads at any board scale).
+ * «+ Añadir pantalla», after a lane's last screen.
+ *
+ * It used to be a dashed card the full size of the screen it would become —
+ * ~530px of width on every band, and the loudest thing on the canvas at a
+ * zoom where the screens themselves were thumbnails. As a chip it costs the
+ * layout nothing (it is chrome, not a node) and reads at any zoom, because
+ * chrome does not scale.
  */
-export function GhostCard({
-	width,
-	height,
-	scale,
+export function GhostChip({
 	label,
 	disabled,
+	/** Why it is refused, when it is refused for a reason worth reading. A
+	 *  browser fires no hover on a `disabled` button, so the sentence rides
+	 *  `aria-label` too rather than a `title` nobody can reach. */
+	reason,
 	onOpen,
 }: {
-	width: number;
-	height: number;
-	scale: number;
 	label: string;
 	disabled: boolean;
+	reason?: string;
 	onOpen: () => void;
 }) {
 	return (
@@ -288,13 +369,11 @@ export function GhostCard({
 			type="button"
 			onClick={onOpen}
 			disabled={disabled}
-			className="flex shrink-0 items-center justify-center rounded-md border-2 border-dashed border-zinc-300 text-zinc-400 hover:border-sky-400 hover:text-sky-600 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-500 dark:hover:border-sky-500 dark:hover:text-sky-400"
-			// The height floors inline: `framedWidth(height, …)` worked only
-			// because the function is `floor(n·s)`, and a name that lies about
-			// its axis invites the next wrong call.
-			style={{ width: framedWidth(width, scale), height: Math.floor(height * scale) }}
+			title={reason}
+			aria-label={reason ? `${label} — ${reason}` : undefined}
+			className="whitespace-nowrap rounded-md border border-dashed border-zinc-400 bg-white/80 px-2 py-1 text-[11px] font-medium text-zinc-500 backdrop-blur hover:border-sky-400 hover:text-sky-600 disabled:opacity-40 dark:border-zinc-600 dark:bg-zinc-900/80 dark:text-zinc-400 dark:hover:border-sky-500 dark:hover:text-sky-400"
 		>
-			<span className="px-2 text-center text-sm font-medium">{label}</span>
+			{label}
 		</button>
 	);
 }

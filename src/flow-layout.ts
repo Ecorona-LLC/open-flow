@@ -1,5 +1,4 @@
 import type { Flow, FlowStep, Viewport } from "./manifest.types";
-import { rowExtent, type RowExtent } from "./screen-frame";
 
 /**
  * The Flujos storyboard's geometry, as data: which screens there are, in
@@ -93,46 +92,18 @@ export function layOut(
 }
 
 /**
- * The natural widths of the trunk columns a branch row sits after: the fork
- * step and everything before it. The trunk is laid out first, so a trunk
- * step's flat index is its position.
+ * Where a screen sits in the journey: its row, and its position in that row.
+ *
+ * Two callers were writing this loop — the panel's gesture handlers and the
+ * board's right-click menu — which is two chances for "the last screen of a
+ * row" to mean two things. The board's `situationOf` still derives `isLast`
+ * inline because it already holds the lane and has nothing to scan for.
  */
-export function forkPrefix(lanes: readonly Lane[], fork: number | null): number[] {
-	if (fork === null) return [];
-	const trunk = lanes.find((lane) => lane.kind === "trunk");
-	return (trunk?.nodes ?? []).slice(0, fork + 1).map((node) => node.viewport.width);
-}
-
-/**
- * What the composer adds to the geometry: an extra tail column per row (the
- * ghost "+ Añadir pantalla", or the open card replacing it) and, while a fork
- * is being authored, one synthetic row starting after the fork column. Data,
- * not JSX, so `fit` can count it and a test can check the arithmetic.
- */
-export interface RowTails {
-	/** Extra column width at the end of a row, by lane key; absent = none. */
-	tail: ReadonlyMap<string, number>;
-	/** A branch row being authored: the fork's flat index and the card's width. */
-	forkRow: { fork: number; width: number } | null;
-}
-
-/**
- * What every row asks of the container. A branch row's extent includes the
- * trunk columns it starts after — rows share horizontal space rather than
- * consuming it serially, which is why the board no longer sums every node.
- */
-export function rowExtents(lanes: readonly Lane[], tails?: RowTails): RowExtent[] {
-	const rows = lanes.map((lane) => {
-		const key = lane.kind === "trunk" ? laneKey(null) : laneKey(lane.id);
-		const tail = tails?.tail.get(key) ?? 0;
-		return rowExtent([
-			...(lane.kind === "branch" ? forkPrefix(lanes, lane.fork) : []),
-			...lane.nodes.map((node) => node.viewport.width),
-			...(tail > 0 ? [tail] : []),
-		]);
-	});
-	if (tails?.forkRow) {
-		rows.push(rowExtent([...forkPrefix(lanes, tails.forkRow.fork), tails.forkRow.width]));
+export function locateNode(lanes: readonly Lane[], key: string) {
+	for (const lane of lanes) {
+		const position = lane.nodes.findIndex((node) => node.key === key);
+		if (position === -1) continue;
+		return { lane, position, isLast: position === lane.nodes.length - 1 };
 	}
-	return rows;
+	return null;
 }

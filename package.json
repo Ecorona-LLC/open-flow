@@ -1,6 +1,6 @@
 {
   "name": "@open-flow/ui",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A live workbench over your Next.js app — real components, tokens, and flows. The open-flow viewer, open source.",
   "license": "Elastic-2.0",
   "repository": {
